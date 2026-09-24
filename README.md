@@ -19,6 +19,45 @@ running so you can adjust and press Enter again.
 
 Press **q** at any time to quit.
 
+## Finding a known object: `find_object`
+
+A second program that learns an object from a photo and finds it in the live webcam feed.
+
+```bash
+./build/find_object [camera_index] [image_path]   # defaults: camera 0, object.jpg
+```
+
+1. The object is isolated from the photo (`object.jpg` should show the object against a
+   plain background, roughly centered) using GrabCut.
+2. The camera opens and each frame is searched for the object using ORB feature matching.
+3. When it is found, a green bounding box is drawn around it. It stays on screen until you
+   press **q**.
+4. If the object is not found within **15 seconds**, the program prints
+   `Object not found`, exits, and returns exit code 1.
+
+ORB is used by default because it is fast. See
+[docs/feature-detector-decision.md](docs/feature-detector-decision.md) for the trade-offs
+against SIFT and how to switch.
+
+## Tests
+
+Offline tests for `find_object` (no camera needed). They learn the object from
+`object.jpg`, paste it onto cluttered backgrounds under different conditions (rotation,
+perspective tilt, darkness, noise, blur, small size), and check that it is found with a
+tight box and that object-free frames give no false detections.
+
+```bash
+ctest --test-dir build --output-on-failure      # runs the ORB and SIFT tests
+./build/find_object_test both                   # full report for both detectors
+./build/find_object_test orb path/to/photo.jpg  # one detector, or a different photo
+```
+
+The report shows hits, mean overlap with the true box, and time per frame for each case.
+The isolated cutout and one annotated example per case (green = detected box, blue =
+true box) are saved to `test_output/` (or `build/test_output/` under `ctest`).
+The tests need `object.jpg` in the project root, and expect the photo's top-left corner
+to be plain background.
+
 ## Choosing the camera
 
 The camera is selected with an optional argument, the camera index (default `0`):
