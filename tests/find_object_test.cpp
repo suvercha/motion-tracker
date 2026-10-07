@@ -11,12 +11,14 @@
 // (green = detected box, blue = true box).
 
 #include "object_finder.hpp"
+#include "segmentation.hpp"
 
 #include <opencv2/geometry.hpp>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -126,12 +128,12 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask,
     const char* name = (type == DetectorType::SIFT) ? "sift" : "orb";
     std::printf("\n=== %s ===\n", name);
 
-    ObjectFinder finder(type);
-    if (!finder.learn(photo)) {
+    std::optional<ObjectFinder> finder = ObjectFinder::fromPhoto(photo, type);
+    if (!finder) {
         std::printf("FAIL: could not learn the object\n");
         return 1;
     }
-    std::printf("learned %zu features\n\n", finder.featureCount());
+    std::printf("learned %zu features\n\n", finder->featureCount());
     std::printf("%-9s %-30s %-5s %-8s %-8s %s\n", "case", "description", "hits", "meanIoU", "meanMs", "result");
 
     int failures = 0;
@@ -141,12 +143,11 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask,
         double iouSum = 0, msSum = 0;
         for (int t = 0; t < TRIALS; t++) {
             Scene scene = makeScene(photo, mask, c, t, rng);
-            cv::Rect box;
             auto start = std::chrono::steady_clock::now();
-            bool found = finder.find(scene.frame, box);
+            std::optional<cv::Rect> found = finder->find(scene.frame);
             msSum += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 
-            double iou = found ? double((box & scene.truth).area()) / double((box | scene.truth).area()) : 0;
+            double iou = found ? double((*found & scene.truth).area()) / double((*found | scene.truth).area()) : 0;
             if (found && iou > MIN_IOU) {
                 hits++;
                 iouSum += iou;
@@ -154,7 +155,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask,
             if (t == 0) {
                 cv::Mat annotated = scene.frame.clone();
                 cv::rectangle(annotated, scene.truth, cv::Scalar(255, 0, 0), 2);
-                if (found) cv::rectangle(annotated, box, cv::Scalar(0, 255, 0), 2);
+                if (found) cv::rectangle(annotated, *found, cv::Scalar(0, 255, 0), 2);
                 cv::imwrite(outDir + "/" + name + "_" + c.id + ".jpg", annotated);
             }
         }
@@ -167,8 +168,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask,
 
     int falsePositives = 0;
     for (int i = 0; i < FALSE_POSITIVE_FRAMES; i++) {
-        cv::Rect box;
-        if (finder.find(makeBackground(photo, cv::Size(1280, 720), rng), box)) falsePositives++;
+        if (finder->find(makeBackground(photo, cv::Size(1280, 720), rng))) falsePositives++;
     }
     std::printf("\nfalse positives on %d object-free frames: %d %s\n", FALSE_POSITIVE_FRAMES,
                 falsePositives, falsePositives == 0 ? "(ok)" : "(FAIL)");
@@ -196,7 +196,7 @@ int main(int argc, char** argv) {
 
     // Isolation check: the cutout should be a sensible blob that doesn't touch the photo's edge.
     std::printf("=== isolation ===\n");
-    cv::Mat mask = ObjectFinder::isolateObject(photo);
+    cv::Mat mask = isolateObject(photo, centeredRect(photo.size(), PHOTO_SEED_FRACTION));
     int failures = 0;
     if (mask.empty()) {
         std::printf("FAIL: could not isolate the object\n");

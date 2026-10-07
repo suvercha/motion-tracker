@@ -63,8 +63,8 @@ to be plain background.
 The camera is selected with an optional argument, the camera index (default `0`):
 
 ```bash
-./build/motion_tracking      # camera 0
-./build/motion_tracking 1    # camera 1
+./build/capture_object      # camera 0
+./build/capture_object 1    # camera 1
 ```
 
 On a Mac with an iPhone nearby, Continuity Camera can take index `0`, and the built-in
@@ -90,5 +90,5 @@ cmake --build build
 ## Run
 
 ```bash
-./build/motion_tracking [camera_index]
+./build/capture_object [camera_index]
 ```
