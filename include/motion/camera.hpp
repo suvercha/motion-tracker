@@ -1,7 +1,13 @@
 #pragma once
 
+#include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 #include <optional>
+#include <string_view>
+
+namespace motion {
+
+constexpr int DEFAULT_CAMERA_INDEX = 0;
 
 // A webcam that tolerates the empty frames cameras often return while warming up.
 class Camera {
@@ -23,6 +29,8 @@ private:
 // Opens camera `index`, printing an error and returning nullopt on failure.
 [[nodiscard]] std::optional<Camera> openCamera(int index);
 
-// The camera index from the first command-line argument (default 0). Prints an
-// error and returns nullopt if the argument is not a non-negative integer.
-[[nodiscard]] std::optional<int> cameraIndexFromArgs(int argc, char** argv);
+// Parses a camera index from command-line text. Prints an error and returns
+// nullopt if it is not a non-negative integer.
+[[nodiscard]] std::optional<int> parseCameraIndex(std::string_view text);
+
+}  // namespace motion

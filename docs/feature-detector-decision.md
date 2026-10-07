@@ -13,15 +13,18 @@ too often in real use.
 
 ## How to switch to SIFT
 
-In [src/find_object.cpp](../src/find_object.cpp), change one line and rebuild:
+No rebuild needed. Pass the detector on the command line:
 
-```cpp
-constexpr DetectorType DETECTOR = DetectorType::SIFT;   // was ORB
+```bash
+./build/find_object --detector=sift
 ```
 
+To make SIFT the default, change `DEFAULT_DETECTOR` in
+[apps/find_object.cpp](../apps/find_object.cpp).
+
 The distance metric (Hamming for ORB, L2 for SIFT) and the reference image size (320 px
-for ORB, 640 px for SIFT) switch automatically with it. The detector code lives in
-[src/object_finder.cpp](../src/object_finder.cpp).
+for ORB, 640 px for SIFT) switch automatically with the detector. The detector code lives
+in [src/object_finder.cpp](../src/object_finder.cpp).
 
 ## Comparison
 

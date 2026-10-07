@@ -4,6 +4,8 @@
 #include <optional>
 #include <vector>
 
+namespace motion {
+
 // The part of a photo, centered, that is assumed to contain the whole object.
 constexpr double PHOTO_SEED_FRACTION = 0.84;
 
@@ -20,3 +22,5 @@ constexpr double PHOTO_SEED_FRACTION = 0.84;
 
 // The masked object on a white background, cropped to its bounding box.
 [[nodiscard]] cv::Mat cutOutObject(const cv::Mat& image, const cv::Mat& mask);
+
+}  // namespace motion

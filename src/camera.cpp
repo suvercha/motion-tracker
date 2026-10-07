@@ -1,11 +1,12 @@
-#include "camera.hpp"
+#include "motion/camera.hpp"
 
 #include <charconv>
 #include <chrono>
-#include <cstring>
 #include <iostream>
 #include <system_error>
 #include <thread>
+
+namespace motion {
 
 namespace {
 
@@ -35,16 +36,15 @@ std::optional<Camera> openCamera(int index) {
     return camera;
 }
 
-std::optional<int> cameraIndexFromArgs(int argc, char** argv) {
-    if (argc < 2) return 0;
-
-    const char* arg = argv[1];
-    const char* end = arg + std::strlen(arg);
+std::optional<int> parseCameraIndex(std::string_view text) {
+    const char* end = text.data() + text.size();
     int index = 0;
-    auto [ptr, error] = std::from_chars(arg, end, index);
+    auto [ptr, error] = std::from_chars(text.data(), end, index);
     if (error != std::errc() || ptr != end || index < 0) {
-        std::cerr << "Error: camera index must be a non-negative integer, got '" << arg << "'." << std::endl;
+        std::cerr << "Error: camera index must be a non-negative integer, got '" << text << "'." << std::endl;
         return std::nullopt;
     }
     return index;
 }
+
+}  // namespace motion

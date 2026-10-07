@@ -1,14 +1,28 @@
-#include "object_finder.hpp"
+#include "motion/object_finder.hpp"
 
-#include "segmentation.hpp"
+#include "motion/segmentation.hpp"
 
 #include <opencv2/geometry.hpp>
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
+
+namespace motion {
 
 namespace {
 
+constexpr int ORB_MAX_FEATURES = 1500;
+
+// A reference feature is kept only if its best match is clearly better than the
+// second best (Lowe's ratio test).
 constexpr float RATIO_THRESHOLD = 0.75f;
+// Matches needed, and that must agree on one homography, to call it found.
 constexpr int MIN_INLIERS = 12;
+constexpr double RANSAC_REPROJECTION_THRESHOLD = 3.0;
+// A detected box smaller than this (in pixels) is noise, not the object.
+constexpr int MIN_BOX_AREA = 400;
+// Features near the object's edge mix in background and shadow, so the mask
+// they are taken from is eroded by a kernel this wide.
+constexpr int FEATURE_MASK_ERODE_SIZE = 15;
 
 // The reference is shrunk to roughly the size the object appears on screen.
 // ORB has a narrow scale range and misses objects far from the reference size;
@@ -17,12 +31,18 @@ int referenceMaxDim(DetectorType type) { return type == DetectorType::SIFT ? 640
 
 }  // namespace
 
+std::optional<DetectorType> parseDetectorType(std::string_view text) {
+    if (text == toString(DetectorType::ORB)) return DetectorType::ORB;
+    if (text == toString(DetectorType::SIFT)) return DetectorType::SIFT;
+    return std::nullopt;
+}
+
 ObjectFinder::ObjectFinder(DetectorType type) : type_(type) {
     if (type == DetectorType::SIFT) {
         detector_ = cv::SIFT::create();
         matcher_ = cv::BFMatcher::create(cv::NORM_L2);
     } else {
-        detector_ = cv::ORB::create(1500);
+        detector_ = cv::ORB::create(ORB_MAX_FEATURES);
         matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING);
     }
 }
@@ -54,10 +74,10 @@ bool ObjectFinder::learn(const cv::Mat& photo) {
     outline_.clear();
     for (const auto& p : *contour) outline_.emplace_back(p);
 
-    // Shrink the mask a little so features on the object's edge, which mix in
-    // background and shadow, are not learned.
     cv::Mat featureMask;
-    cv::erode(cropMask, featureMask, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15)));
+    cv::erode(cropMask, featureMask,
+              cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size(FEATURE_MASK_ERODE_SIZE, FEATURE_MASK_ERODE_SIZE)));
 
     cv::Mat gray;
     cv::cvtColor(crop, gray, cv::COLOR_BGR2GRAY);
@@ -87,7 +107,7 @@ std::optional<cv::Rect> ObjectFinder::find(const cv::Mat& frame) const {
     if (static_cast<int>(src.size()) < MIN_INLIERS) return std::nullopt;
 
     cv::Mat inlierMask;
-    cv::Mat H = cv::findHomography(src, dst, cv::RANSAC, 3.0, inlierMask);
+    cv::Mat H = cv::findHomography(src, dst, cv::RANSAC, RANSAC_REPROJECTION_THRESHOLD, inlierMask);
     if (H.empty() || cv::countNonZero(inlierMask) < MIN_INLIERS) return std::nullopt;
 
     // Reject twisted/flipped mappings: the reference's corners must stay convex.
@@ -102,7 +122,9 @@ std::optional<cv::Rect> ObjectFinder::find(const cv::Mat& frame) const {
     std::vector<cv::Point2f> projected;
     cv::perspectiveTransform(outline_, projected, H);
     cv::Rect found = cv::boundingRect(projected) & cv::Rect(0, 0, frame.cols, frame.rows);
-    if (found.area() < 400) return std::nullopt;
+    if (found.area() < MIN_BOX_AREA) return std::nullopt;
 
     return found;
 }
+
+}  // namespace motion

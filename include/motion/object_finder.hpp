@@ -1,11 +1,22 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/features.hpp>
 #include <optional>
+#include <string_view>
 #include <vector>
+
+namespace motion {
 
 // See docs/feature-detector-decision.md for the trade-offs between the two.
 enum class DetectorType { ORB, SIFT };
+
+[[nodiscard]] constexpr std::string_view toString(DetectorType type) {
+    return type == DetectorType::SIFT ? "sift" : "orb";
+}
+
+// "orb" or "sift" (lowercase), or nullopt for anything else.
+[[nodiscard]] std::optional<DetectorType> parseDetectorType(std::string_view text);
 
 // An object learned from a photo, which can then be found in other images.
 class ObjectFinder {
@@ -22,7 +33,7 @@ public:
 
 private:
     explicit ObjectFinder(DetectorType type);
-    bool learn(const cv::Mat& photo);
+    [[nodiscard]] bool learn(const cv::Mat& photo);
 
     DetectorType type_;
     cv::Ptr<cv::Feature2D> detector_;
@@ -33,3 +44,5 @@ private:
     std::vector<cv::Point2f> outline_;  // object outline, in reference-image coordinates
     cv::Size size_;
 };
+
+}  // namespace motion

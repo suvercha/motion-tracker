@@ -1,14 +1,27 @@
-#include "camera.hpp"
-#include "exit_code.hpp"
-#include "segmentation.hpp"
+// Shows the camera feed with a box in the center; Enter cuts out the object in
+// the box and saves it as an image.
+//
+// Usage: capture_object [camera_index]   (default: camera 0)
 
-#include <opencv2/opencv.hpp>
+#include "motion/camera.hpp"
+#include "motion/exit_code.hpp"
+#include "motion/segmentation.hpp"
+
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <optional>
+
+using namespace motion;
+
+namespace {
 
 constexpr int ENTER_KEY = 13;
 constexpr int MIN_FOREGROUND_PIXELS = 500;
 constexpr double CENTER_ZONE_FRACTION = 0.3;
+constexpr int PREVIEW_DELAY_MS = 30;
+constexpr int RESULT_DISPLAY_MS = 2000;
 constexpr const char* OUTPUT_PATH = "captured_object.jpg";
 constexpr const char* PREVIEW_WINDOW = "Camera Preview";
 constexpr const char* CAPTURE_WINDOW = "Captured Object";
@@ -42,7 +55,7 @@ ExitCode captureLoop(Camera& camera) {
         cv::rectangle(preview, zone, cv::Scalar(255, 0, 0), 2);
         cv::imshow(PREVIEW_WINDOW, preview);
 
-        int key = cv::waitKey(30);
+        int key = cv::waitKey(PREVIEW_DELAY_MS);
         if (key == 'q') return ExitCode::Ok;
         if (key != ENTER_KEY) continue;
 
@@ -50,14 +63,20 @@ ExitCode captureLoop(Camera& camera) {
             cv::imwrite(OUTPUT_PATH, *object);
             std::cout << "Success! Object captured and saved to '" << OUTPUT_PATH << "'." << std::endl;
             cv::imshow(CAPTURE_WINDOW, *object);
-            cv::waitKey(2000);
+            cv::waitKey(RESULT_DISPLAY_MS);
             return ExitCode::Ok;
         }
     }
 }
 
+}  // namespace
+
 int main(int argc, char** argv) {
-    std::optional<int> cameraIndex = cameraIndexFromArgs(argc, argv);
+    if (argc > 2) {
+        std::cerr << "Error: too many arguments.\nUsage: capture_object [camera_index]" << std::endl;
+        return toInt(ExitCode::Error);
+    }
+    std::optional<int> cameraIndex = (argc > 1) ? parseCameraIndex(argv[1]) : DEFAULT_CAMERA_INDEX;
     if (!cameraIndex) return toInt(ExitCode::Error);
 
     std::optional<Camera> camera = openCamera(*cameraIndex);

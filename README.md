@@ -24,20 +24,22 @@ Press **q** at any time to quit.
 A second program that learns an object from a photo and finds it in the live webcam feed.
 
 ```bash
-./build/find_object [camera_index] [image_path]   # defaults: camera 0, object.jpg
+./build/find_object [--detector=orb|sift] [camera_index] [image_path]
+# defaults: orb, camera 0, object.jpg
 ```
 
 1. The object is isolated from the photo (`object.jpg` should show the object against a
    plain background, roughly centered) using GrabCut.
-2. The camera opens and each frame is searched for the object using ORB feature matching.
+2. The camera opens and each frame is searched for the object using feature matching
+   (ORB by default, or SIFT with `--detector=sift`).
 3. When it is found, a green bounding box is drawn around it. It stays on screen until you
    press **q**.
 4. If the object is not found within **15 seconds**, the program prints
    `Object not found`, exits, and returns exit code 1.
 
-ORB is used by default because it is fast. See
+ORB is the default because it is fast. See
 [docs/feature-detector-decision.md](docs/feature-detector-decision.md) for the trade-offs
-against SIFT and how to switch.
+against SIFT.
 
 ## Tests
 
@@ -73,7 +75,7 @@ camera then becomes `1`. If you see a black preview, try the other index.
 ## Requirements
 
 - CMake 3.16+
-- A C++17 compiler
+- A C++20 compiler
 - OpenCV 5.0 (for example `brew install opencv`)
 
 On macOS, the terminal app you run this from needs camera permission
@@ -87,8 +89,21 @@ cmake -S . -B build
 cmake --build build
 ```
 
+Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF`.
+
 ## Run
 
 ```bash
 ./build/capture_object [camera_index]
+./build/find_object [--detector=orb|sift] [camera_index] [image_path]
 ```
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `apps/` | The two programs: `capture_object.cpp`, `find_object.cpp` |
+| `include/motion/` | Public headers of the shared library (namespace `motion`) |
+| `src/` | The shared library: camera access, object segmentation, object learning/finding |
+| `tests/` | Offline tests |
+| `docs/` | Design decisions |
