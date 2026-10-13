@@ -24,22 +24,34 @@ Press **q** at any time to quit.
 A second program that learns an object from a photo and finds it in the live webcam feed.
 
 ```bash
-./build/find_object [--detector=orb|sift] [camera_index] [image_path]
-# defaults: orb, camera 0, object.jpg
+./scripts/download_models.sh     # once: fetches the tracker's model files into models/
+./build/find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]
+# defaults: orb, the project's models/ folder, camera 0, object.jpg
 ```
 
 1. The object is isolated from the photo (`object.jpg` should show the object against a
    plain background, roughly centered) using GrabCut.
 2. The camera opens and each frame is searched for the object using feature matching
    (ORB by default, or SIFT with `--detector=sift`).
-3. When it is found, a green bounding box is drawn around it. It stays on screen until you
-   press **q**.
+3. When it is found, a bounding box is drawn around it and it is followed until you press
+   **q**:
+   - the box is **green** when the detector found the object in that frame, and **yellow**
+     when the detector missed it (for example, motion blur) and a small neural-network
+     tracker (OpenCV's `TrackerNano`, about 4 ms a frame) is following it;
+   - the object's path over the last 3 seconds is drawn as a fading **dotted line**;
+   - its **speed**, in pixels per second, is shown in the top-left corner (`--` when it is not
+     known). Speed is in pixels because a single camera cannot measure real distances.
 4. If the object is not found within **15 seconds**, the program prints
    `Object not found`, exits, and returns exit code 1.
 
 ORB is the default because it is fast. See
 [docs/feature-detector-decision.md](docs/feature-detector-decision.md) for the trade-offs
-against SIFT.
+against SIFT, and [docs/tracking-design.md](docs/tracking-design.md) for how the object is
+followed, why `TrackerNano` was chosen, and the known limit: the tracker is trusted for at
+most 1 second, so an object that stays motion-blurred for longer is lost.
+
+The tracker's model files (about 1.8 MB) are not stored in the repository; see
+[models/README.md](models/README.md).
 
 ## Tests
 
@@ -49,14 +61,27 @@ perspective tilt, darkness, noise, blur, small size), and check that it is found
 tight box and that object-free frames give no false detections.
 
 ```bash
-ctest --test-dir build --output-on-failure      # runs the ORB and SIFT tests
+ctest --test-dir build --output-on-failure      # runs every test below
 ./build/find_object_test both                   # full report for both detectors
 ./build/find_object_test orb path/to/photo.jpg  # one detector, or a different photo
+./build/tracking_test orb                       # following a moving, blurred object
+./build/path_history_test                       # the trail and speed maths
 ```
 
-The report shows hits, mean overlap with the true box, and time per frame for each case.
-The isolated cutout and one annotated example per case (green = detected box, blue =
-true box) are saved to `test_output/` (or `build/test_output/` under `ctest`).
+- **`find_object_test`**: hits, mean overlap with the true box, error of the object's center,
+  and time per frame for each case. The isolated cutout and one annotated example per case
+  (green = detected box, blue = true box) are saved to `test_output/` (or
+  `build/test_output/` under `ctest`).
+- **`tracking_test`**: renders a short video of the object moving at a known speed, with
+  motion blur, and checks the positions and speed found by the detector plus tracker against
+  the truth. It also reports how often the detector alone would have found the object, and
+  takes about a minute. It needs the tracker models (`scripts/download_models.sh`). For the
+  blur scenarios it checks that the tracker carries the object for about a second after the
+  detector loses it, with an accurate speed; following a blur that lasts longer is a known
+  limit, see [docs/tracking-design.md](docs/tracking-design.md).
+- **`path_history_test`**: unit tests for the trail, the speed calculation and the dotted
+  line, using made-up timestamps.
+
 The tests need `object.jpg` in the project root, and expect the photo's top-left corner
 to be plain background.
 
@@ -95,7 +120,7 @@ Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF
 
 ```bash
 ./build/capture_object [camera_index]
-./build/find_object [--detector=orb|sift] [camera_index] [image_path]
+./build/find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]
 ```
 
 ## Project layout
@@ -106,4 +131,6 @@ Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF
 | `include/motion/` | Public headers of the shared library (namespace `motion`) |
 | `src/` | The shared library: camera access, object segmentation, object learning/finding |
 | `tests/` | Offline tests |
-| `docs/` | Design decisions |
+| `docs/` | Design decisions and measurements |
+| `models/` | The tracker's model files (downloaded, not in git) |
+| `scripts/` | `download_models.sh` |

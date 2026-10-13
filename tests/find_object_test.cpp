@@ -12,6 +12,7 @@
 
 #include "motion/object_finder.hpp"
 #include "motion/segmentation.hpp"
+#include "test_scene.hpp"
 
 #include <opencv2/geometry.hpp>
 #include <opencv2/highgui.hpp>
@@ -26,6 +27,8 @@
 #include <vector>
 
 using namespace motion;
+using test_scene::FRAME_SIZE;
+using test_scene::makeBackground;
 
 namespace {
 
@@ -35,10 +38,6 @@ constexpr double MIN_IOU = 0.5;    // detected box vs true box, to count as a hi
 constexpr int FALSE_POSITIVE_FRAMES = 20;
 constexpr int RNG_SEED = 11;       // fixed: same scenes every run
 
-const cv::Size FRAME_SIZE(1280, 720);
-constexpr int JPEG_QUALITY = 70;   // webcam-like compression
-constexpr int CLUTTER_BOXES = 25;
-constexpr int CLUTTER_TEXTS = 6;
 constexpr double TRIAL_ROTATION_STEP = 47;  // degrees added per trial, so trials differ
 
 // How the object appears in a test frame.
@@ -72,29 +71,10 @@ const std::vector<Case> CASES = {
      .required = false},
 };
 
-// Background made from the photo's own background (its top-left corner, which
-// is assumed to be plain background), plus colored boxes and text as clutter.
-cv::Mat makeBackground(const cv::Mat& photo, cv::RNG& rng) {
-    cv::Mat patch = photo(cv::Rect(0, 0, photo.cols / 6, photo.rows / 5)).clone();
-    cv::Mat bg;
-    cv::resize(patch, bg, FRAME_SIZE);
-    for (int i = 0; i < CLUTTER_BOXES; i++) {
-        cv::Rect r(rng.uniform(0, FRAME_SIZE.width - 100), rng.uniform(0, FRAME_SIZE.height - 100),
-                   rng.uniform(30, 160), rng.uniform(30, 160));
-        cv::rectangle(bg, r, cv::Scalar(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255)),
-                      cv::FILLED);
-    }
-    for (int i = 0; i < CLUTTER_TEXTS; i++) {
-        cv::putText(bg, "HELPS DRY",
-                    cv::Point(rng.uniform(0, FRAME_SIZE.width - 300), rng.uniform(40, FRAME_SIZE.height - 10)),
-                    cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 255, 255), 3);
-    }
-    return bg;
-}
-
 struct Scene {
     cv::Mat frame;
     cv::Rect truth;
+    cv::Point2f truthCenter;  // where the object's centroid is in the frame
 };
 
 // The homography that rotates and scales the photo to a random spot near the
@@ -134,6 +114,14 @@ Scene makeScene(const cv::Mat& photo, const cv::Mat& mask, const Conditions& c, 
     warped.convertTo(warped, -1, c.brightness, 0);
     warped.copyTo(s.frame, warpedMask);
     s.truth = cv::boundingRect(warpedMask);
+    // Where the object's own centroid lands. (Not the centroid of the warped
+    // shape: under perspective tilt those are different points.)
+    cv::Moments moments = cv::moments(mask, /*binaryImage=*/true);
+    std::vector<cv::Point2f> centroid = {
+        {static_cast<float>(moments.m10 / moments.m00), static_cast<float>(moments.m01 / moments.m00)}};
+    std::vector<cv::Point2f> placed;
+    cv::perspectiveTransform(centroid, placed, H);
+    s.truthCenter = placed[0];
 
     if (c.blur > 0) cv::GaussianBlur(s.frame, s.frame, cv::Size(0, 0), c.blur);
     if (c.noise > 0) {
@@ -144,9 +132,7 @@ Scene makeScene(const cv::Mat& photo, const cv::Mat& mask, const Conditions& c, 
         wide.convertTo(s.frame, CV_8UC3);
     }
 
-    std::vector<uchar> jpg;
-    cv::imencode(".jpg", s.frame, jpg, {cv::IMWRITE_JPEG_QUALITY, JPEG_QUALITY});
-    s.frame = cv::imdecode(jpg, cv::IMREAD_COLOR);
+    s.frame = test_scene::jpegRoundTrip(s.frame);
     return s;
 }
 
@@ -174,32 +160,39 @@ int checkIsolation(const cv::Mat& photo, const cv::Mat& mask, const std::string&
 struct CaseResult {
     int hits = 0;
     double meanIou = 0;
+    double meanCenterErrorPx = 0;  // distance from the detected center to the true center
     double meanMs = 0;
 };
 
 CaseResult runCase(const ObjectFinder& finder, const cv::Mat& photo, const cv::Mat& mask, const Case& c,
                    DetectorType type, const std::string& outDir, cv::RNG& rng) {
     CaseResult result;
-    double iouSum = 0, msSum = 0;
+    double iouSum = 0, centerErrorSum = 0, msSum = 0;
     for (int t = 0; t < TRIALS; t++) {
         Scene scene = makeScene(photo, mask, c.conditions, t, rng);
         auto start = std::chrono::steady_clock::now();
-        std::optional<cv::Rect> found = finder.find(scene.frame);
+        std::optional<Detection> found = finder.find(scene.frame);
         msSum += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 
-        double iou = found ? intersectionOverUnion(*found, scene.truth) : 0;
+        double iou = found ? intersectionOverUnion(found->box, scene.truth) : 0;
         if (iou > MIN_IOU) {
             result.hits++;
             iouSum += iou;
+            centerErrorSum += cv::norm(found->center - scene.truthCenter);
         }
         if (t == 0) {
             cv::Mat annotated = scene.frame.clone();
             cv::rectangle(annotated, scene.truth, cv::Scalar(255, 0, 0), 2);
-            if (found) cv::rectangle(annotated, *found, cv::Scalar(0, 255, 0), 2);
+            if (found) {
+                cv::rectangle(annotated, found->box, cv::Scalar(0, 255, 0), 2);
+                cv::circle(annotated, found->center, 4, cv::Scalar(0, 255, 0), cv::FILLED);
+            }
+            cv::circle(annotated, scene.truthCenter, 4, cv::Scalar(255, 0, 0), cv::FILLED);
             cv::imwrite(outDir + "/" + std::string(toString(type)) + "_" + c.id + ".jpg", annotated);
         }
     }
     result.meanIou = result.hits ? iouSum / result.hits : 0.0;
+    result.meanCenterErrorPx = result.hits ? centerErrorSum / result.hits : 0.0;
     result.meanMs = msSum / TRIALS;
     return result;
 }
@@ -215,7 +208,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask, co
     }
     std::cout << "learned " << finder->featureCount() << " features\n\n";
     std::cout << std::left << std::setw(10) << "case" << std::setw(31) << "description" << std::setw(7) << "hits"
-              << std::setw(9) << "meanIoU" << std::setw(9) << "meanMs" << "result\n";
+              << std::setw(9) << "meanIoU" << std::setw(11) << "ctrErrPx" << std::setw(9) << "meanMs" << "result\n";
 
     int failures = 0;
     cv::RNG rng(RNG_SEED);
@@ -227,6 +220,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask, co
         std::cout << std::left << std::setw(10) << c.id << std::setw(31) << c.description
                   << std::setw(7) << (std::to_string(r.hits) + "/" + std::to_string(TRIALS))
                   << std::fixed << std::setprecision(2) << std::setw(9) << r.meanIou
+                  << std::setprecision(1) << std::setw(11) << r.meanCenterErrorPx
                   << std::setprecision(0) << std::setw(9) << r.meanMs << verdict << '\n';
     }
 

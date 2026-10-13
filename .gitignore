@@ -9,3 +9,4 @@ cmake-build-*/
 .idea/
 captured_object.jpg
 test_output/
+models/*.onnx

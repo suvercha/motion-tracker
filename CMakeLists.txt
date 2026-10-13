@@ -6,7 +6,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Only the OpenCV modules the code uses; linking all of them makes every program
 # load about 60 libraries at startup.
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio features geometry)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio video features geometry dnn)
 
 # Compiler warnings, applied to every target that links this.
 add_library(motion_warnings INTERFACE)
@@ -17,14 +17,20 @@ else()
 endif()
 
 # Code shared by the programs and the tests: camera access, object segmentation,
-# and learning/finding an object. Public headers are in include/motion/.
+# learning/finding an object, following it, and drawing its path and speed.
+# Public headers are in include/motion/.
 add_library(motion_common STATIC
     src/camera.cpp
     src/segmentation.cpp
-    src/object_finder.cpp)
+    src/object_finder.cpp
+    src/object_tracker.cpp
+    src/overlay.cpp
+    src/path_history.cpp)
 target_compile_features(motion_common PUBLIC cxx_std_20)
 target_include_directories(motion_common PUBLIC include)
 target_include_directories(motion_common SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
+# Where ObjectTracker looks for the TrackerNano models by default (see models/README.md).
+target_compile_definitions(motion_common PUBLIC MOTION_MODELS_DIR="${CMAKE_SOURCE_DIR}/models")
 target_link_libraries(motion_common PUBLIC ${OpenCV_LIBS} PRIVATE motion_warnings)
 
 # Programs.
@@ -44,4 +50,13 @@ if(BUILD_TESTING)
              COMMAND find_object_test orb ${CMAKE_SOURCE_DIR}/object.jpg ${CMAKE_BINARY_DIR}/test_output)
     add_test(NAME find_object_sift
              COMMAND find_object_test sift ${CMAKE_SOURCE_DIR}/object.jpg ${CMAKE_BINARY_DIR}/test_output)
+
+    add_executable(tracking_test tests/tracking_test.cpp)
+    target_link_libraries(tracking_test PRIVATE motion_common motion_warnings)
+    add_test(NAME tracking_orb
+             COMMAND tracking_test orb ${CMAKE_SOURCE_DIR}/object.jpg ${CMAKE_BINARY_DIR}/test_output)
+
+    add_executable(path_history_test tests/path_history_test.cpp)
+    target_link_libraries(path_history_test PRIVATE motion_common motion_warnings)
+    add_test(NAME path_history COMMAND path_history_test)
 endif()

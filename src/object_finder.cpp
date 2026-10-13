@@ -74,6 +74,10 @@ bool ObjectFinder::learn(const cv::Mat& photo) {
     outline_.clear();
     for (const auto& p : *contour) outline_.emplace_back(p);
 
+    cv::Moments moments = cv::moments(cropMask, /*binaryImage=*/true);
+    if (moments.m00 <= 0) return false;
+    centroid_ = {static_cast<float>(moments.m10 / moments.m00), static_cast<float>(moments.m01 / moments.m00)};
+
     cv::Mat featureMask;
     cv::erode(cropMask, featureMask,
               cv::getStructuringElement(cv::MORPH_ELLIPSE,
@@ -85,7 +89,7 @@ bool ObjectFinder::learn(const cv::Mat& photo) {
     return static_cast<int>(keypoints_.size()) >= MIN_INLIERS;
 }
 
-std::optional<cv::Rect> ObjectFinder::find(const cv::Mat& frame) const {
+std::optional<Detection> ObjectFinder::find(const cv::Mat& frame) const {
     cv::Mat gray;
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
 
@@ -124,7 +128,9 @@ std::optional<cv::Rect> ObjectFinder::find(const cv::Mat& frame) const {
     cv::Rect found = cv::boundingRect(projected) & cv::Rect(0, 0, frame.cols, frame.rows);
     if (found.area() < MIN_BOX_AREA) return std::nullopt;
 
-    return found;
+    std::vector<cv::Point2f> center;
+    cv::perspectiveTransform(std::vector<cv::Point2f>{centroid_}, center, H);
+    return Detection{found, center[0]};
 }
 
 }  // namespace motion

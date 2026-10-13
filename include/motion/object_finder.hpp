@@ -18,6 +18,12 @@ enum class DetectorType { ORB, SIFT };
 // "orb" or "sift" (lowercase), or nullopt for anything else.
 [[nodiscard]] std::optional<DetectorType> parseDetectorType(std::string_view text);
 
+// Where the object was found in an image.
+struct Detection {
+    cv::Rect box;        // bounding box of the object's outline
+    cv::Point2f center;  // the object's centroid; steadier than the box center when it rotates
+};
+
 // An object learned from a photo, which can then be found in other images.
 class ObjectFinder {
 public:
@@ -25,9 +31,9 @@ public:
     // centered. Returns nullopt if it can't be isolated or has too few features.
     [[nodiscard]] static std::optional<ObjectFinder> fromPhoto(const cv::Mat& photo, DetectorType type);
 
-    // Looks for the learned object in `frame` and returns its bounding box in
-    // frame coordinates, or nullopt if it isn't found.
-    [[nodiscard]] std::optional<cv::Rect> find(const cv::Mat& frame) const;
+    // Looks for the learned object in `frame` and returns where it is, in frame
+    // coordinates, or nullopt if it isn't found.
+    [[nodiscard]] std::optional<Detection> find(const cv::Mat& frame) const;
 
     [[nodiscard]] size_t featureCount() const { return keypoints_.size(); }
 
@@ -42,6 +48,7 @@ private:
     std::vector<cv::KeyPoint> keypoints_;
     cv::Mat descriptors_;
     std::vector<cv::Point2f> outline_;  // object outline, in reference-image coordinates
+    cv::Point2f centroid_;              // object centroid, in reference-image coordinates
     cv::Size size_;
 };
 
