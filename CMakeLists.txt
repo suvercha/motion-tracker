@@ -6,7 +6,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Only the OpenCV modules the code uses; linking all of them makes every program
 # load about 60 libraries at startup.
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio video features geometry dnn)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio video tracking features geometry dnn)
 
 # Compiler warnings, applied to every target that links this.
 add_library(motion_warnings INTERFACE)

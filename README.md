@@ -28,9 +28,11 @@ Press **q** at any time to quit.
 A second program that learns an object from a photo and finds it in the live webcam feed.
 
 ```bash
-./scripts/download_models.sh     # once: fetches the tracker's model files into models/
-./build/find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]
-# defaults: orb, the project's models/ folder, 4.5 cm, camera 0, object.jpg
+./scripts/download_models.sh     # once: fetches the tracker model files into models/
+./build/find_object [--detector=orb|sift] [--tracker=nano|vit|mil|kcf|csrt] [--models=DIR]
+                    [--object-width-cm=N] [camera_index] [image_path]
+# defaults: orb, nano, the project's models/ folder, 4.5 cm, camera 0, object.jpg
+./build/find_object --help      # describes every option
 ```
 
 1. The object is isolated from the photo (`object.jpg` should show the object against a
@@ -56,6 +58,37 @@ size of a pixel, and the pixel speed is multiplied by it. It is only right for m
 measured. Pass `--object-width-cm=0` to show pixels per second only, and set the width to match
 your object when you use another photo.
 
+### Choosing a detector
+
+Pass `--detector=NAME` to pick how the object is found in each frame (`./build/find_object --help`
+lists them):
+
+| `--detector=` | Speed per frame | Use it when |
+|---|---|---|
+| `orb` (default) | about 13 ms | most scenes; it keeps up with a 30 fps camera |
+| `sift` | about 45 ms | the room is dim: in the test it found the object in 6 of 6 dark-room trials, where ORB found it in 3 of 6 |
+
+Both fail to find an object that is moving and smeared by motion blur; the tracker covers that
+for about a second. The measurements behind this are in
+[docs/feature-detector-decision.md](docs/feature-detector-decision.md).
+
+### Choosing a tracker
+
+When the detector misses a frame, a tracker follows the object from where it was last seen, for up
+to a second. Pass `--tracker=NAME` to pick one:
+
+| `--tracker=` | Cost per frame | Model files | Notes from the tests |
+|---|---|---|---|
+| `nano` (default) | about 4 ms | yes | cheap and about as accurate as the others; keeps the loop at the camera's frame rate |
+| `vit` | about 3 ms | yes | the best position accuracy; speed accuracy no better than the others |
+| `mil` | about 55 ms | no | as accurate as nano, but slow enough to drop the frame rate to about 15 fps while it runs |
+| `kcf` | about 29 ms | no | the only one that notices the object has left the scene, but the worst at following it |
+| `csrt` | about 24 ms | no | the least reliable: its speed was 26% off at 12 px of blur |
+
+`nano` and `vit` need the files from `./scripts/download_models.sh` (see
+[models/README.md](models/README.md)); the others need none. No tracker is clearly more accurate
+than another; the full comparison is in [docs/tracking-design.md](docs/tracking-design.md).
+
 ORB is the default because it is fast. See
 [docs/feature-detector-decision.md](docs/feature-detector-decision.md) for the trade-offs
 against SIFT, and [docs/tracking-design.md](docs/tracking-design.md) for how the object is
@@ -77,6 +110,7 @@ ctest --test-dir build --output-on-failure      # runs every test below
 ./build/find_object_test both                   # full report for both detectors
 ./build/find_object_test orb path/to/photo.jpg  # one detector, or a different photo
 ./build/tracking_test orb                       # following a moving, blurred object
+./build/tracking_test orb object.jpg test_output models kcf   # the same with another tracker
 ./build/path_history_test                       # the trail and speed maths
 ```
 
@@ -87,7 +121,8 @@ ctest --test-dir build --output-on-failure      # runs every test below
 - **`tracking_test`**: renders a short video of the object moving at a known speed, with
   motion blur, and checks the positions and speed found by the detector plus tracker against
   the truth. It also reports how often the detector alone would have found the object, and
-  takes about a minute. It needs the tracker models (`scripts/download_models.sh`). For the
+  takes about a minute. It needs the tracker models (`scripts/download_models.sh`), and first
+  checks that every tracker type starts and follows the object. For the
   blur scenarios it checks that the tracker carries the object for about a second after the
   detector loses it, with an accurate speed; following a blur that lasts longer is a known
   limit, see [docs/tracking-design.md](docs/tracking-design.md).
@@ -140,7 +175,7 @@ Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF
 
 ```bash
 ./build/capture_object [camera_index]
-./build/find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]
+./build/find_object [--detector=orb|sift] [--tracker=nano|vit|mil|kcf|csrt] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]
 ```
 
 ## Project layout

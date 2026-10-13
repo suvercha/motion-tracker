@@ -1,9 +1,10 @@
 // Learns an object from a photo, then looks for it in the camera feed. Once found,
 // it follows the object, draws its recent path as a tapering line, and shows its speed.
 //
-// Usage: find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N]
-//                    [camera_index] [image_path]
-//   defaults: orb, the project's models/ folder, 4.5 cm, camera 0, object.jpg
+// Usage: find_object [--detector=orb|sift] [--tracker=nano|vit|mil|kcf|csrt] [--models=DIR]
+//                    [--object-width-cm=N] [camera_index] [image_path]
+//   defaults: orb, nano, the project's models/ folder, 4.5 cm, camera 0, object.jpg
+// Run with --help for the list of detectors.
 // The speed is shown in cm/s as well as px/s if the object's real width is known.
 // The tracker's model files must be in the models folder: run scripts/download_models.sh.
 // See docs/feature-detector-decision.md for how to choose a detector, and
@@ -40,21 +41,49 @@ const cv::Scalar DETECTED_BOX_COLOR(0, 255, 0);   // green: found by the detecto
 const cv::Scalar TRACKED_BOX_COLOR(0, 255, 255);  // yellow: detector missed, following with the tracker
 const cv::Scalar TRAIL_COLOR(0, 0, 255);          // red
 constexpr std::string_view DETECTOR_OPTION = "--detector=";
+constexpr std::string_view TRACKER_OPTION = "--tracker=";
 constexpr std::string_view MODELS_OPTION = "--models=";
 constexpr std::string_view WIDTH_OPTION = "--object-width-cm=";
 constexpr const char* USAGE =
-    "Usage: find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]";
+    "Usage: find_object [--detector=orb|sift] [--tracker=nano|vit|mil|kcf|csrt] [--models=DIR]\n"
+    "                   [--object-width-cm=N] [camera_index] [image_path]";
 // The widest dimension of the tin in the default object.jpg.
 constexpr double DEFAULT_OBJECT_WIDTH_CM = 4.5;
 constexpr double MAX_OBJECT_WIDTH_CM = 1000;
 
 struct Options {
+    bool help = false;  // print the usage and exit
     DetectorType detector = DEFAULT_DETECTOR;
+    TrackerType tracker = DEFAULT_TRACKER;
     std::string modelsDir = DEFAULT_MODELS_DIR;
     double objectWidthCm = DEFAULT_OBJECT_WIDTH_CM;  // 0: unknown, so speed is in pixels only
     int cameraIndex = DEFAULT_CAMERA_INDEX;
     std::string imagePath = DEFAULT_IMAGE_PATH;
 };
+
+void printHelp() {
+    std::cout << USAGE << "\n\n"
+              << "Detectors (--detector=NAME, default " << toString(DEFAULT_DETECTOR) << "):\n"
+              << "  orb   fast, about 13 ms a frame; the best choice for most scenes\n"
+              << "  sift  about 3x slower; finds the object more reliably in dim light\n"
+              << "\n"
+              << "Trackers (--tracker=NAME, default " << toString(DEFAULT_TRACKER) << "), which follow the object when the\n"
+              << "detector misses a frame, for example because of motion blur:\n"
+              << "  nano  about 4 ms a frame; needs model files; the best choice for most scenes\n"
+              << "  vit   about 3 ms a frame; needs a model file; best position accuracy\n"
+              << "  mil   about 55 ms a frame; no model files\n"
+              << "  kcf   about 29 ms a frame; no model files; the only one that notices the object left\n"
+              << "  csrt  about 24 ms a frame; no model files; least reliable in the tests\n"
+              << "\n"
+              << "Other options:\n"
+              << "  --models=DIR           folder with the model files (see scripts/download_models.sh)\n"
+              << "  --object-width-cm=N    the object's real width, for the speed in cm/s (default "
+              << DEFAULT_OBJECT_WIDTH_CM << "; 0 for pixels only)\n"
+              << "  --help                 show this message\n"
+              << "\n"
+              << "camera_index defaults to " << DEFAULT_CAMERA_INDEX << ", image_path to " << DEFAULT_IMAGE_PATH << "."
+              << std::endl;
+}
 
 // A width in centimetres between 0 (unknown) and MAX_OBJECT_WIDTH_CM. Prints an error and
 // returns nullopt for anything else.
@@ -77,14 +106,29 @@ std::optional<Options> parseArgs(int argc, char** argv) {
 
     for (int i = 1; i < argc; i++) {
         std::string_view arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            options.help = true;
+            return options;
+        }
         if (arg.substr(0, DETECTOR_OPTION.size()) == DETECTOR_OPTION) {
             std::string_view value = arg.substr(DETECTOR_OPTION.size());
             std::optional<DetectorType> detector = parseDetectorType(value);
             if (!detector) {
-                std::cerr << "Error: unknown detector '" << value << "' (use orb or sift).\n" << USAGE << std::endl;
+                std::cerr << "Error: unknown detector '" << value << "' (use orb or sift; --help describes them).\n"
+                          << USAGE << std::endl;
                 return std::nullopt;
             }
             options.detector = *detector;
+        } else if (arg.substr(0, TRACKER_OPTION.size()) == TRACKER_OPTION) {
+            std::string_view value = arg.substr(TRACKER_OPTION.size());
+            std::optional<TrackerType> tracker = parseTrackerType(value);
+            if (!tracker) {
+                std::cerr << "Error: unknown tracker '" << value
+                          << "' (use nano, vit, mil, kcf or csrt; --help describes them).\n"
+                          << USAGE << std::endl;
+                return std::nullopt;
+            }
+            options.tracker = *tracker;
         } else if (arg.substr(0, MODELS_OPTION.size()) == MODELS_OPTION) {
             options.modelsDir = std::string(arg.substr(MODELS_OPTION.size()));
         } else if (arg.substr(0, WIDTH_OPTION.size()) == WIDTH_OPTION) {
@@ -185,12 +229,17 @@ ExitCode searchForObject(Camera& camera, ObjectTracker& tracker, double objectWi
 int main(int argc, char** argv) {
     std::optional<Options> options = parseArgs(argc, argv);
     if (!options) return toInt(ExitCode::Error);
+    if (options->help) {
+        printHelp();
+        return toInt(ExitCode::Ok);
+    }
 
     std::optional<ObjectFinder> finder = learnObject(options->imagePath, options->detector);
     if (!finder) return toInt(ExitCode::Error);
 
-    std::optional<ObjectTracker> tracker = ObjectTracker::create(std::move(*finder), options->modelsDir);
+    std::optional<ObjectTracker> tracker = ObjectTracker::create(std::move(*finder), options->modelsDir, options->tracker);
     if (!tracker) return toInt(ExitCode::Error);
+    std::cout << "Following with the " << toString(options->tracker) << " tracker when the detector misses." << std::endl;
 
     std::optional<Camera> camera = openCamera(options->cameraIndex);
     if (!camera) return toInt(ExitCode::Error);

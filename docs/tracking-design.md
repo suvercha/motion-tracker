@@ -175,7 +175,8 @@ heavy blur is in the same range as the others and it has no other advantage here
 
 **Trade-off:** Nano needs its model files at runtime. They are not in the repository (the
 repository the OpenCV documentation links to shows no license), so
-`scripts/download_models.sh` fetches them into `models/`.
+`scripts/download_models.sh` fetches them into `models/`. All five trackers can be chosen with
+`find_object --tracker=NAME`, if you want to use another.
 
 ## Limits
 
@@ -213,6 +214,7 @@ cmake -S . -B build && cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The tracker comparison, the cost table and the "following alone" table came from temporary
-builds that swapped the tracker for MIL, KCF, CSRT or ViT (the `opencv_tracking` module, and
-the ViT model from OpenCV's model zoo); they are not part of the repository.
+The "which tracker" table can be reproduced by passing a tracker to the test, for example
+`./build/tracking_test orb object.jpg test_output models kcf` (`nano`, `vit`, `mil`, `kcf` or
+`csrt`). The cost table and the "following alone" table came from temporary benchmark
+programs that are not part of the repository.

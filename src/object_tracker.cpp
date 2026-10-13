@@ -1,20 +1,32 @@
 #include "motion/object_tracker.hpp"
 
+#include <opencv2/tracking.hpp>
 #include <chrono>
 #include <iostream>
+#include <vector>
 
 namespace motion {
 
 namespace {
 
 // Without a detection for this long, the object is declared lost. Trackers drift
-// onto the background, and TrackerNano kept reporting a box (with an unchanged
-// confidence score) for as long as it was measured after the object had left, so
-// it must not be trusted for long.
+// onto the background, and all but KCF kept reporting a box (TrackerNano with an
+// unchanged confidence score) for as long as it was measured after the object had
+// left, so a tracker must not be trusted for long.
 constexpr double MAX_TRACK_ONLY_SECONDS = 1.0;
 
-constexpr const char* BACKBONE_FILE = "nanotrack_backbone_sim.onnx";
-constexpr const char* NECKHEAD_FILE = "nanotrack_head_sim.onnx";
+constexpr const char* NANO_BACKBONE_FILE = "nanotrack_backbone_sim.onnx";
+constexpr const char* NANO_NECKHEAD_FILE = "nanotrack_head_sim.onnx";
+constexpr const char* VIT_FILE = "object_tracking_vittrack_2023sep.onnx";
+
+// The model files a tracker type needs (the older trackers need none).
+std::vector<const char*> modelFiles(TrackerType type) {
+    switch (type) {
+        case TrackerType::Nano: return {NANO_BACKBONE_FILE, NANO_NECKHEAD_FILE};
+        case TrackerType::Vit: return {VIT_FILE};
+        default: return {};
+    }
+}
 
 // Loads a network. OpenCV runs it on the CPU by default. Throws cv::Exception if the
 // file is missing or invalid.
@@ -31,15 +43,52 @@ cv::Point2f boxCenter(const cv::Rect& box) {
 
 }  // namespace
 
-std::optional<ObjectTracker> ObjectTracker::create(ObjectFinder finder, const std::filesystem::path& modelsDir) {
-    try {
-        return ObjectTracker(std::move(finder), loadNet(modelsDir / BACKBONE_FILE), loadNet(modelsDir / NECKHEAD_FILE));
-    } catch (const cv::Exception&) {
-        std::cerr << "Error: could not load the tracker models (" << BACKBONE_FILE << " and " << NECKHEAD_FILE
-                  << ") from '" << modelsDir.string() << "'.\n"
-                  << "Run scripts/download_models.sh to download them, or pass --models=DIR." << std::endl;
-        return std::nullopt;
+std::optional<TrackerType> parseTrackerType(std::string_view text) {
+    for (TrackerType type : ALL_TRACKER_TYPES) {
+        if (text == toString(type)) return type;
     }
+    return std::nullopt;
+}
+
+std::optional<TrackerFactory> createTrackerFactory(TrackerType type, const std::filesystem::path& modelsDir) {
+    try {
+        switch (type) {
+            case TrackerType::Nano: {
+                cv::dnn::Net backbone = loadNet(modelsDir / NANO_BACKBONE_FILE);
+                cv::dnn::Net neckhead = loadNet(modelsDir / NANO_NECKHEAD_FILE);
+                return TrackerFactory([backbone, neckhead]() -> cv::Ptr<cv::Tracker> {
+                    return cv::TrackerNano::create(backbone, neckhead);
+                });
+            }
+            case TrackerType::Vit: {
+                cv::dnn::Net net = loadNet(modelsDir / VIT_FILE);
+                return TrackerFactory([net]() -> cv::Ptr<cv::Tracker> { return cv::TrackerVit::create(net); });
+            }
+            case TrackerType::Mil:
+                return TrackerFactory([]() -> cv::Ptr<cv::Tracker> { return cv::TrackerMIL::create(); });
+            case TrackerType::Kcf:
+                return TrackerFactory([]() -> cv::Ptr<cv::Tracker> { return cv::TrackerKCF::create(); });
+            case TrackerType::Csrt:
+                return TrackerFactory([]() -> cv::Ptr<cv::Tracker> { return cv::TrackerCSRT::create(); });
+        }
+    } catch (const cv::Exception&) {
+        std::cerr << "Error: could not load the " << toString(type) << " tracker's model files (";
+        const char* separator = "";
+        for (const char* file : modelFiles(type)) {
+            std::cerr << separator << file;
+            separator = " and ";
+        }
+        std::cerr << ") from '" << modelsDir.string() << "'.\n"
+                  << "Run scripts/download_models.sh to download them, or pass --models=DIR." << std::endl;
+    }
+    return std::nullopt;
+}
+
+std::optional<ObjectTracker> ObjectTracker::create(ObjectFinder finder, const std::filesystem::path& modelsDir,
+                                                   TrackerType type) {
+    std::optional<TrackerFactory> factory = createTrackerFactory(type, modelsDir);
+    if (!factory) return std::nullopt;
+    return ObjectTracker(std::move(finder), std::move(*factory));
 }
 
 void ObjectTracker::reset() {
@@ -70,7 +119,7 @@ std::optional<Track> ObjectTracker::followWithTracker(const cv::Mat& frame) {
     // First miss after a detection: start following from where it was last seen.
     // That was the previous frame, so the tracker is started on that frame.
     if (!tracker_) {
-        tracker_ = cv::TrackerNano::create(backbone_, neckhead_);
+        tracker_ = makeTracker_();
         tracker_->init(lastDetectionFrame_, lastDetection_->box);
     }
 

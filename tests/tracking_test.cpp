@@ -7,9 +7,11 @@
 // and reports how often the detector alone would have found the object compared
 // with the detector plus tracker.
 //
-// Usage: tracking_test [orb|sift] [photo] [output_dir] [models_dir]
-//   defaults: orb, object.jpg, test_output, the project's models/ folder
-// The tracker's model files must be in the models folder: run scripts/download_models.sh.
+// Usage: tracking_test [orb|sift] [photo] [output_dir] [models_dir] [nano|vit|mil|kcf|csrt]
+//   defaults: orb, object.jpg, test_output, the project's models/ folder, nano
+// The nano and vit trackers need their model files in the models folder: run
+// scripts/download_models.sh. Whatever tracker is chosen, a quick check first makes sure that
+// every tracker type starts and follows the object.
 // Writes a few annotated frames per scenario to output_dir.
 
 #include "motion/object_finder.hpp"
@@ -203,9 +205,9 @@ bool shouldSave(double t) {
 }
 
 Metrics runScenario(const Scenario& sc, const Subject& subject, const cv::Mat& background, const ObjectFinder& finder,
-                    const std::string& modelsDir, const std::string& outDir) {
+                    const std::string& modelsDir, TrackerType trackerType, const std::string& outDir) {
     Metrics metrics;
-    ObjectTracker tracker = ObjectTracker::create(finder, modelsDir).value();
+    ObjectTracker tracker = ObjectTracker::create(finder, modelsDir, trackerType).value();
     PathHistory path;
     cv::RNG rng(RNG_SEED);
     double trueSpeed = std::hypot(sc.velocity.x, sc.velocity.y);
@@ -276,7 +278,7 @@ Metrics runScenario(const Scenario& sc, const Subject& subject, const cv::Mat& b
 // object moving. Printed for information; this is what decides how often the
 // detector needs to run.
 void reportCosts(const Subject& subject, const cv::Mat& background, const ObjectFinder& finder,
-                 const std::string& modelsDir) {
+                 const TrackerFactory& makeTracker, TrackerType trackerType) {
     const Scenario& sc = SCENARIOS.front();
     cv::RNG rng(RNG_SEED);
     constexpr int FRAMES = 20;
@@ -294,10 +296,7 @@ void reportCosts(const Subject& subject, const cv::Mat& background, const Object
 
     std::optional<Detection> first = finder.find(frames.front());
     if (!first) return;
-    cv::TrackerNano::Params params;
-    params.backbone = modelsDir + "/nanotrack_backbone_sim.onnx";
-    params.neckhead = modelsDir + "/nanotrack_head_sim.onnx";
-    cv::Ptr<cv::Tracker> tracker = cv::TrackerNano::create(params);
+    cv::Ptr<cv::Tracker> tracker = makeTracker();
     auto initBegin = std::chrono::steady_clock::now();
     tracker->init(frames.front(), first->box);
     double initMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - initBegin).count();
@@ -310,7 +309,48 @@ void reportCosts(const Subject& subject, const cv::Mat& background, const Object
     }
 
     std::cout << std::fixed << std::setprecision(1) << "cost per frame: detector " << detectMs / frames.size()
-              << " ms, TrackerNano " << trackMs / (frames.size() - 1) << " ms (plus " << initMs << " ms to start it)\n\n";
+              << " ms, " << toString(trackerType) << " tracker " << trackMs / (frames.size() - 1) << " ms (plus " << initMs << " ms to start it)\n\n";
+}
+
+// Checks that every tracker type can be created, started and used to follow the object.
+// This is a working check, not a comparison of the trackers. The object is found while it
+// sits still, then moves and blurs, so the detector may miss and the tracker has to carry it.
+// Returns the number of failures.
+int checkEveryTrackerType(const Subject& subject, const cv::Mat& background, const ObjectFinder& finder,
+                          const std::string& modelsDir) {
+    constexpr double MAX_ERROR_PX = 80;  // the tin is about 220 px across
+    const Scenario& sc = SCENARIOS[2];
+    cv::RNG rng(RNG_SEED);
+    const std::vector<double> times = {0.4, 0.5, 0.7};
+    std::vector<cv::Mat> frames;
+    for (double t : times) frames.push_back(renderFrame(subject, background, sc, t, rng));
+
+    int failures = 0;
+    std::cout << "every tracker type:\n";
+    for (TrackerType type : ALL_TRACKER_TYPES) {
+        std::optional<ObjectTracker> tracker = ObjectTracker::create(finder, modelsDir, type);
+        if (!tracker) {
+            std::cout << "  " << std::left << std::setw(5) << toString(type) << " FAIL: could not be created\n";
+            failures++;
+            continue;
+        }
+        std::optional<Track> last;
+        for (size_t i = 0; i < frames.size(); i++) last = tracker->update(frames[i], at(times[i]));
+
+        double error = last ? cv::norm(last->center - positionAt(sc, times.back())) : -1;
+        bool ok = last && error < MAX_ERROR_PX;
+        std::cout << "  " << std::left << std::setw(5) << toString(type) << (ok ? " ok" : " FAIL");
+        if (last) {
+            std::cout << ": " << (last->detected ? "found by the detector" : "followed by the tracker") << ", "
+                      << std::fixed << std::setprecision(0) << error << " px from the true position";
+        } else {
+            std::cout << ": lost the object";
+        }
+        std::cout << '\n';
+        if (!ok) failures++;
+    }
+    std::cout << '\n';
+    return failures;
 }
 
 // Prints the scenario's row and returns the number of failures.
@@ -385,10 +425,13 @@ int main(int argc, char** argv) {
     std::string photoPath = (argc > 2) ? argv[2] : "object.jpg";
     std::string outDir = (argc > 3) ? argv[3] : "test_output";
     std::string modelsDir = (argc > 4) ? argv[4] : DEFAULT_MODELS_DIR;
+    std::string trackerName = (argc > 5) ? argv[5] : std::string(toString(DEFAULT_TRACKER));
 
     std::optional<DetectorType> detector = parseDetectorType(detectorName);
-    if (!detector) {
-        std::cerr << "Usage: tracking_test [orb|sift] [photo] [output_dir] [models_dir]" << std::endl;
+    std::optional<TrackerType> trackerType = parseTrackerType(trackerName);
+    if (!detector || !trackerType) {
+        std::cerr << "Usage: tracking_test [orb|sift] [photo] [output_dir] [models_dir] [nano|vit|mil|kcf|csrt]"
+                  << std::endl;
         return 2;
     }
     cv::Mat photo = cv::imread(photoPath);
@@ -412,17 +455,20 @@ int main(int argc, char** argv) {
 
     std::cout << "=== " << toString(*detector) << ": following a moving object (" << FPS << " fps, "
               << "object about " << cvRound(2 * subject.radius * OBJECT_SCALE) << " px across) ===\n";
-    // The tracker needs its model files; say so clearly if they are missing.
-    if (!ObjectTracker::create(*finder, modelsDir)) return 2;
+    // The trackers need their model files; say so clearly if they are missing.
+    std::optional<TrackerFactory> factory = createTrackerFactory(*trackerType, modelsDir);
+    if (!factory) return 2;
     int failures = 0;
-    if (ObjectTracker::create(*finder, "/nonexistent-models-dir")) {
+    if (ObjectTracker::create(*finder, "/nonexistent-models-dir", TrackerType::Nano)) {
         std::cout << "FAIL: ObjectTracker::create accepted a models folder that does not exist\n";
         failures++;
     }
 
-    reportCosts(subject, background, *finder, modelsDir);
+    failures += checkEveryTrackerType(subject, background, *finder, modelsDir);
+    std::cout << "following with the " << toString(*trackerType) << " tracker:\n";
+    reportCosts(subject, background, *finder, *factory, *trackerType);
     for (const Scenario& sc : SCENARIOS) {
-        failures += report(sc, runScenario(sc, subject, background, *finder, modelsDir, outDir));
+        failures += report(sc, runScenario(sc, subject, background, *finder, modelsDir, *trackerType, outDir));
     }
 
     std::cout << "\nFrames written to '" << outDir << "/' (tracking_<scenario>_<time>.jpg: green box = detector, "
