@@ -1,9 +1,13 @@
 # motion-tracking
 
-A small OpenCV program that shows a live webcam feed and, when you press Enter,
-captures the object in the center of the frame and saves it as an image.
+Two small OpenCV programs that work with a webcam:
 
-## What it does
+- **`capture_object`**: shows a live preview; press Enter to cut out the object in the center
+  of the frame and save it as an image.
+- **`find_object`**: learns an object from a photo, finds it in the live feed, and follows it,
+  drawing its recent path and showing its speed.
+
+## Capturing an object: `capture_object`
 
 1. Opens a camera and shows a live preview with a blue box marking the center zone
    (the middle 30% of the frame, in each dimension).
@@ -87,11 +91,13 @@ to be plain background.
 
 ## Choosing the camera
 
-The camera is selected with an optional argument, the camera index (default `0`):
+Both programs use camera `0` by default. Pass the camera index to use another one (for
+`find_object` it is the first number on the command line):
 
 ```bash
 ./build/capture_object      # camera 0
 ./build/capture_object 1    # camera 1
+./build/find_object 1       # camera 1
 ```
 
 On a Mac with an iPhone nearby, Continuity Camera can take index `0`, and the built-in
@@ -115,6 +121,12 @@ cmake --build build
 ```
 
 Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF`.
+
+`find_object` and `tracking_test` also need the tracker's model files, downloaded once:
+
+```bash
+./scripts/download_models.sh
+```
 
 ## Run
 

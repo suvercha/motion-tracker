@@ -45,7 +45,11 @@ machines; less CPU heat; compact binary descriptors.
 **Cons of ORB:** less reliable when the object is small in frame, blurred, or dim; more
 sensitive to how large the reference image is relative to the object on screen.
 
-**Pros of SIFT:** more accurate across scale, blur and lighting; needs less tuning.
+**Pros of SIFT:** more accurate across scale and lighting, and with an evenly blurred
+image; needs less tuning. It is not better with a moving object smeared by motion blur:
+neither detector found the tin once it was blurred by 12 px or more while moving (ORB in 20%
+of frames, SIFT in 21%, both only while it was still). See
+[tracking-design.md](tracking-design.md).
 
 **Cons of SIFT:** about 3x slower per frame (still roughly 20 fps on the test machine);
 larger descriptors.
@@ -86,8 +90,9 @@ What this tells us:
 ## When to revisit
 
 Switch to SIFT if, on the real webcam, ORB often fails to find the object within the
-15-second window when it is clearly visible, especially in dim rooms, at a distance, or
-with motion blur.
+15-second window when it is clearly visible, especially in dim rooms or at a distance.
+SIFT will not help if the object is moving and smeared by motion blur; that is handled by
+the tracker (see [tracking-design.md](tracking-design.md)).
 
 ## Related decisions in the same program
 
