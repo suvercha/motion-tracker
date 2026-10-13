@@ -25,6 +25,17 @@ struct Track {
     cv::Rect box;
     cv::Point2f center;
     bool detected;  // false: the detector missed this frame and the position comes from the tracker
+    // The object's widest dimension in the frame, in pixels. While only the tracker is
+    // following it, this is the size from the last detection, because a tracker's box
+    // size drifts (the object is assumed to stay at about the same distance).
+    double apparentSizePx;
+
+    // The real size of one pixel at the object, in centimetres, if the object is
+    // `objectWidthCm` across. Nullopt if either is unknown (zero).
+    [[nodiscard]] std::optional<double> cmPerPixel(double objectWidthCm) const {
+        if (objectWidthCm <= 0 || apparentSizePx <= 0) return std::nullopt;
+        return objectWidthCm / apparentSizePx;
+    }
 };
 
 // Follows a learned object through a video.

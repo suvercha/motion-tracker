@@ -1,4 +1,4 @@
-// Unit tests for PathHistory (trail and speed) and the dotted-line placement.
+// Unit tests for PathHistory (trail and speeds) and the trail drawing.
 // Uses made-up timestamps, so it is fast and exact. No camera or photo needed.
 
 #include "motion/overlay.hpp"
@@ -30,10 +30,11 @@ Clock::time_point at(double seconds) {
 constexpr double FRAME_SECONDS = 1.0 / 30;
 
 // An object moving at a constant velocity (pixels per second), sampled at 30 fps for `seconds`.
-PathHistory straightPath(cv::Point2f velocity, double seconds, cv::Point2f start = {100, 100}) {
+PathHistory straightPath(cv::Point2f velocity, double seconds, std::optional<double> cmPerPixel = std::nullopt,
+                         cv::Point2f start = {100, 100}) {
     PathHistory path;
     for (double t = 0; t <= seconds + 1e-9; t += FRAME_SECONDS) {
-        path.add(at(t), start + velocity * static_cast<float>(t));
+        path.add(at(t), start + velocity * static_cast<float>(t), cmPerPixel);
     }
     return path;
 }
@@ -70,91 +71,143 @@ void testNotEnoughData() {
     check(!two.speed(at(FRAME_SECONDS)).has_value(), "two points: no speed yet");
 
     PathHistory path = straightPath({100, 0}, 1.0);
-    check(!path.speed(at(1.0 + 0.5)).has_value(), "newest point half a second old: speed unknown (object lost)");
+    check(!path.speed(at(1.0 + 0.5)).has_value(), "newest point half a second old: speed unknown");
 }
 
-void testBreakPath() {
-    // Moves fast, is lost, and reappears far away standing still.
+void testLostFrames() {
+    // Moves fast, is lost for half a second, and reappears far away standing still.
     PathHistory path = straightPath({300, 0}, 1.0);
-    path.breakPath();
-    for (double t = 1.5; t <= 2.0; t += FRAME_SECONDS) path.add(at(t), {900, 400});
+    check(path.speed(at(1.0)).has_value(), "moving object has a speed");
 
-    std::optional<double> speed = path.speed(at(2.0));
-    check(speed.has_value() && *speed == 0.0, "after a break, the jump across the gap does not count as speed");
+    for (double t = 1.0 + FRAME_SECONDS; t <= 1.5; t += FRAME_SECONDS) path.markLost(at(t));
+    check(!path.speed(at(1.5)).has_value(), "while the object is lost there is no speed");
 
-    PathHistory fresh = straightPath({300, 0}, 1.0);
-    fresh.breakPath();
-    fresh.add(at(1.5), {900, 400});
-    fresh.add(at(1.5 + FRAME_SECONDS), {900, 400});
-    check(!fresh.speed(at(1.5 + FRAME_SECONDS)).has_value(), "right after a break: no speed until enough new points");
+    double t = 1.5 + FRAME_SECONDS;
+    path.add(at(t), {900, 400});
+    path.add(at(t += FRAME_SECONDS), {900, 400});
+    check(!path.speed(at(t)).has_value(), "right after it reappears: no speed until there are enough new points");
+
+    for (t += FRAME_SECONDS; t <= 2.2; t += FRAME_SECONDS) path.add(at(t), {900, 400});
+    std::optional<double> speed = path.speed(at(t));
+    check(speed.has_value() && *speed == 0.0, "after a gap, the jump across it does not count as speed");
+
+    // A single missed frame in the middle of steady motion must not poison the speed for long.
+    PathHistory dropout;
+    double x = 0;
+    for (double u = 0; u <= 1.5; u += FRAME_SECONDS, x += 10) {
+        if (std::abs(u - 0.5) < FRAME_SECONDS / 2) dropout.markLost(at(u));
+        else dropout.add(at(u), {static_cast<float>(x), 50});
+    }
+    std::optional<double> afterDropout = dropout.speed(at(1.5));
+    check(afterDropout.has_value() && std::abs(*afterDropout - 300.0) < 15.0, "a single missed frame: speed recovers to 300 px/s");
 }
 
 void testTrail() {
-    PathHistory path = straightPath({50, 0}, 5.0);  // 5 s of path
-    std::vector<TrailPoint> trail = path.trail(at(5.0));
-    check(!trail.empty(), "trail has points");
-    check(std::all_of(trail.begin(), trail.end(), [](const TrailPoint& p) { return p.ageSeconds <= TRAIL_SECONDS + 1e-6; }),
-          "trail only reaches back TRAIL_SECONDS");
-    check(std::is_sorted(trail.begin(), trail.end(), [](const TrailPoint& a, const TrailPoint& b) { return a.ageSeconds > b.ageSeconds; }),
-          "trail is oldest first");
-    check(std::abs(trail.back().ageSeconds) < 1e-6, "newest trail point has age 0");
+    // 100 frames, more than the trail holds.
+    PathHistory path = straightPath({60, 0}, 100 * FRAME_SECONDS);
+    std::vector<std::optional<cv::Point2f>> trail = path.trail();
+    check(trail.size() == TRAIL_LENGTH, "the trail keeps exactly TRAIL_LENGTH frames");
+    check(trail.front().has_value() && trail.back().has_value() && trail.front()->x > trail.back()->x,
+          "the trail is newest first");
 
-    path.breakPath();
-    path.add(at(5.2), {0, 0});
-    trail = path.trail(at(5.2));
-    check(trail.back().segment != trail.front().segment, "points after a break are in a new segment");
+    // Lost frames take a place in the trail, as gaps.
+    PathHistory gappy;
+    gappy.add(at(0), {10, 10});
+    gappy.markLost(at(FRAME_SECONDS));
+    gappy.add(at(2 * FRAME_SECONDS), {30, 10});
+    trail = gappy.trail();
+    check(trail.size() == 3 && trail[0] && !trail[1] && trail[2], "a lost frame is a gap in the trail");
+
+    // Once the object has been lost for TRAIL_LENGTH frames, its tail has faded away.
+    PathHistory fading = straightPath({60, 0}, 1.0);
+    for (size_t i = 1; i <= TRAIL_LENGTH; i++) fading.markLost(at(1.0 + i * FRAME_SECONDS));
+    trail = fading.trail();
+    check(std::none_of(trail.begin(), trail.end(), [](const auto& p) { return p.has_value(); }),
+          "after TRAIL_LENGTH lost frames, no tail is left");
 }
 
-void testDottedPath() {
-    // A straight 300 px line, once with many samples and once with just two.
-    auto line = [](int samples) {
-        std::vector<TrailPoint> trail;
-        for (int i = 0; i < samples; i++) {
-            double f = static_cast<double>(i) / (samples - 1);
-            trail.push_back({{static_cast<float>(300 * f), 50}, 1.0 * (1 - f), 0});
-        }
-        return trail;
-    };
-
-    for (int samples : {2, 31}) {
-        std::vector<Dot> dots = dottedPath(line(samples), 12.0);
-        bool evenlySpaced = true;
-        for (size_t i = 1; i < dots.size(); i++) {
-            if (std::abs(cv::norm(dots[i].position - dots[i - 1].position) - 12.0) > 0.01) evenlySpaced = false;
-        }
-        check(dots.size() == 26 && evenlySpaced,
-              "300 px line from " + std::to_string(samples) + " samples: 26 dots, 12 px apart");
+void testTrailThickness() {
+    bool matchesFormula = true, neverBelowOne = true, nonIncreasing = true;
+    for (size_t i = 1; i < TRAIL_LENGTH; i++) {
+        int expected = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(TRAIL_LENGTH) / (i + 1.0)) * 2.5));
+        matchesFormula = matchesFormula && trailThickness(i) == expected;
+        neverBelowOne = neverBelowOne && trailThickness(i) >= 1;
+        if (i > 1) nonIncreasing = nonIncreasing && trailThickness(i) <= trailThickness(i - 1);
     }
+    check(matchesFormula, "thickness = sqrt(TRAIL_LENGTH / (i + 1)) * 2.5");
+    check(neverBelowOne, "the line is always at least 1 px thick");
+    check(nonIncreasing && trailThickness(1) > trailThickness(TRAIL_LENGTH - 1), "the trail tapers: thick at the object, thin at the tail");
+}
 
-    std::vector<Dot> dots = dottedPath(line(31), 12.0);
-    check(dots.front().alpha < dots.back().alpha, "older dots are fainter than newer ones");
+void testMetricSpeed() {
+    cv::Point2f velocity(180, 135);  // 225 px/s
+    PathHistory path = straightPath(velocity, 1.0, 0.02);
+    std::optional<double> cm = path.metricSpeed(at(1.0));
+    check(cm.has_value() && std::abs(*cm - 4.5) < 4.5 * 0.02, "225 px/s at 0.02 cm per pixel: 4.5 cm/s within 2%");
 
-    // Two segments: no dots between them, and each starts with a dot.
-    std::vector<TrailPoint> broken = {{{0, 0}, 2.0, 0}, {{100, 0}, 1.9, 0}, {{500, 300}, 0.5, 1}, {{600, 300}, 0.4, 1}};
-    dots = dottedPath(broken, 12.0);
-    bool anyBetween = std::any_of(dots.begin(), dots.end(), [](const Dot& d) { return d.position.x > 100.5f && d.position.x < 499.5f; });
-    check(!anyBetween, "no dots across a break");
-    check(std::any_of(dots.begin(), dots.end(), [](const Dot& d) { return d.position == cv::Point2f(500, 300); }),
-          "a new segment starts with a dot");
+    PathHistory noScale = straightPath(velocity, 1.0);
+    check(noScale.speed(at(1.0)).has_value() && !noScale.metricSpeed(at(1.0)).has_value(),
+          "without a pixel size there is a px/s speed but no cm/s speed");
 
-    check(dottedPath({}, 12.0).empty() && dottedPath({{{1, 1}, 0, 0}}, 12.0).empty(), "empty or single-point trail: no dots");
+    PathHistory still;
+    for (double t = 0; t <= 1.0; t += FRAME_SECONDS) still.add(at(t), {300, 200}, 0.02);
+    std::optional<double> stillCm = still.metricSpeed(at(1.0));
+    check(stillCm.has_value() && *stillCm == 0.0, "a still object reads 0 cm/s");
+
+    // One badly measured size must not swing the result: the median is used.
+    PathHistory outlier;
+    int frame = 0;
+    for (double t = 0; t <= 1.0; t += FRAME_SECONDS, frame++) {
+        outlier.add(at(t), cv::Point2f(100, 100) + velocity * static_cast<float>(t), frame == 25 ? 0.2 : 0.02);
+    }
+    std::optional<double> outlierCm = outlier.metricSpeed(at(1.0));
+    check(outlierCm.has_value() && std::abs(*outlierCm - 4.5) < 4.5 * 0.02, "one wrong pixel size is ignored");
+
+    // Closer to the camera means a smaller real size per pixel; the speed uses the size in the window.
+    PathHistory approaching;
+    for (double t = 0; t <= 1.0; t += FRAME_SECONDS) {
+        approaching.add(at(t), cv::Point2f(100, 100) + velocity * static_cast<float>(t), 0.02 - 0.004 * t);
+    }
+    std::optional<double> approachCm = approaching.metricSpeed(at(1.0));
+    check(approachCm.has_value() && *approachCm > 225 * 0.016 && *approachCm < 225 * 0.0172,
+          "a pixel size that changes during the move: the speed uses the recent sizes");
+
+    for (double t = 1.0 + FRAME_SECONDS; t <= 1.5; t += FRAME_SECONDS) path.markLost(at(t));
+    check(!path.metricSpeed(at(1.5)).has_value(), "no cm/s speed while the object is lost");
 }
 
 void testDrawing() {
     cv::Mat image = cv::Mat::zeros(240, 320, CV_8UC3);
-    std::vector<TrailPoint> trail = {{{-30, -30}, 1.0, 0}, {{5, 5}, 0.8, 0}, {{160, 120}, 0.4, 0}, {{400, 300}, 0.0, 0}};
-    drawDottedTrail(image, trail, cv::Scalar(0, 140, 255));
-    check(cv::countNonZero(image.reshape(1)) > 0, "trail draws something, including near and past the image edge");
+    std::vector<std::optional<cv::Point2f>> trail = {cv::Point2f(400, 300), cv::Point2f(160, 120), cv::Point2f(5, 5),
+                                                     cv::Point2f(-30, -30)};
+    drawTrail(image, trail, cv::Scalar(0, 0, 255));
+    check(cv::countNonZero(image.reshape(1)) > 0, "the trail draws something, including near and past the image edge");
+
+    cv::Mat gap = cv::Mat::zeros(240, 320, CV_8UC3);
+    drawTrail(gap, {cv::Point2f(100, 100), std::nullopt, cv::Point2f(200, 100)}, cv::Scalar(0, 0, 255));
+    check(cv::countNonZero(gap.reshape(1)) == 0, "no line is drawn across a lost frame");
+
+    cv::Mat none = cv::Mat::zeros(240, 320, CV_8UC3);
+    drawTrail(none, {}, cv::Scalar(0, 0, 255));
+    drawTrail(none, {cv::Point2f(10, 10)}, cv::Scalar(0, 0, 255));
+    check(cv::countNonZero(none.reshape(1)) == 0, "an empty or single-point trail draws nothing");
 
     cv::Mat labelled = cv::Mat::zeros(240, 320, CV_8UC3);
     drawSpeedLabel(labelled, 123.4);
     cv::Mat withUnknown = cv::Mat::zeros(240, 320, CV_8UC3);
     drawSpeedLabel(withUnknown, std::nullopt);
-    check(cv::countNonZero(labelled.reshape(1)) > 0 && cv::countNonZero(withUnknown.reshape(1)) > 0,
-          "speed label draws for a known and an unknown speed");
-    cv::Mat difference;
-    cv::absdiff(labelled, withUnknown, difference);
-    check(cv::countNonZero(difference.reshape(1)) > 0, "known and unknown speed look different");
+    cv::Mat withMetric = cv::Mat::zeros(240, 320, CV_8UC3);
+    drawSpeedLabel(withMetric, 123.4, 2.5);
+    check(cv::countNonZero(labelled.reshape(1)) > 0 && cv::countNonZero(withUnknown.reshape(1)) > 0 &&
+              cv::countNonZero(withMetric.reshape(1)) > 0,
+          "the speed label draws for a known, an unknown and a metric speed");
+
+    auto differ = [](const cv::Mat& a, const cv::Mat& b) {
+        cv::Mat difference;
+        cv::absdiff(a, b, difference);
+        return cv::countNonZero(difference.reshape(1)) > 0;
+    };
+    check(differ(labelled, withUnknown) && differ(labelled, withMetric), "the three speed labels look different");
 }
 
 }  // namespace
@@ -163,9 +216,10 @@ int main() {
     testConstantVelocity();
     testStationaryJitter();
     testNotEnoughData();
-    testBreakPath();
+    testLostFrames();
     testTrail();
-    testDottedPath();
+    testTrailThickness();
+    testMetricSpeed();
     testDrawing();
 
     std::cout << (failures == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED") << std::endl;

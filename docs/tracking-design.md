@@ -1,34 +1,64 @@
 # Following the object: design and measurements
 
 **Status:** `find_object` finds the object with a detector (ORB by default) on every frame
-and uses OpenCV's `TrackerNano` only when the detector misses. Nano was chosen after
-comparing five trackers (see [Why TrackerNano](#why-trackernano)). The design has one known
-limit: a moving object that stays motion-blurred for more than about a second is lost
-(see [Limits](#limits)).
+and uses OpenCV's `TrackerNano` only when the detector misses. Nano was chosen for its cost,
+not for better accuracy: all five trackers compared are about equally accurate, and Nano is
+13x cheaper than the most accurate one (see [Why TrackerNano](#why-trackernano)). The design
+has one known limit: a moving object that stays motion-blurred for more than about a second
+is lost (see [Limits](#limits)).
 
 ## What `find_object` does once the object is found
 
-1. **Detect every frame.** `ObjectFinder` returns the object's box and its centroid,
-   projected through the homography. The position used for the path and speed is that
-   centroid rather than the box center, because a box center moves when a non-round object
-   rotates (its bounding box changes size) and the centroid does not. On the tilted test
-   views the projected centroid was within 1.4 px of the truth.
+1. **Detect every frame.** `ObjectFinder` returns the object's box, its centroid projected
+   through the homography, and its apparent size. The position used for the path and speed is
+   that centroid rather than the box center, because a box center moves when a non-round
+   object rotates (its bounding box changes size) and the centroid does not. On the tilted
+   test views the projected centroid was within 1.4 px of the truth.
 2. **Fill in misses.** When the detector misses a frame, `ObjectTracker` starts a
    `TrackerNano` from the last detected box and follows the object until the detector finds
    it again. The box is green when it comes from the detector and yellow when it comes from
    the tracker. The tracker's two model files are loaded once at startup.
 3. **Give up after 1 second.** A tracker cannot tell when it has lost the object, so
    tracker-only positions are trusted for at most 1 second.
-4. **Keep a path.** `PathHistory` stores timestamped centers. The dotted trail is the last
-   3 seconds, with dots every 12 px that fade with age. The path is broken wherever the
-   object was lost, so the trail never joins two separate sightings.
-5. **Speed.** A straight-line fit over the last 0.4 s of the path, in pixels per second.
-   A single-frame difference would be useless: 2 px of detection jitter at 30 fps reads as
-   60 px/s. Below 15 px/s it reads 0, and it shows `--` when the object was not seen in the
-   last 0.3 s.
+4. **Keep a path.** `PathHistory` keeps one entry per camera frame, in a queue of the last
+   `TRAIL_LENGTH` frames (64, about 2 seconds at 30 fps; a constant in
+   `include/motion/path_history.hpp`). A frame where the object was lost is a gap in the
+   queue, so the tail fades away when the object is lost. The trail is drawn as line segments
+   between consecutive points that taper with age, `thickness = sqrt(TRAIL_LENGTH / (i + 1)) * 2.5`
+   for the i-th segment back, and no line is drawn across a gap.
+5. **Speed in pixels.** A straight-line fit over the last 0.4 s of the path, in pixels per
+   second. A single-frame difference would be useless: 2 px of detection jitter at 30 fps
+   reads as 60 px/s. Below 15 px/s it reads 0, and it shows `--` as soon as the object is lost.
+6. **Speed in cm/s.** See below.
 
-Speed is in pixels because a single 2D camera cannot give real distances without knowing
-the object's size or distance. It also cannot see motion toward or away from the camera.
+## Speed in cm/s
+
+A single camera cannot measure distance by itself, so the object's real width is needed
+(`--object-width-cm`, 4.5 by default for the tin in `object.jpg`). Each detection reports the
+object's widest dimension in pixels: the longest distance between two points of its outline
+as projected into the frame. Then:
+
+```
+cm per pixel = real width / apparent width in pixels
+speed in cm/s = speed in px/s x cm per pixel
+```
+
+The cm per pixel used is the median over the same 0.4 s window as the speed. While only the
+tracker is following the object, the apparent width from the last detection is used, because
+a tracker's box size drifts.
+
+For motion **across** the view at about a constant distance this needs no camera calibration:
+the focal length cancels out. Motion toward or away from the camera is not measured. Lens
+distortion is ignored. The speed is as accurate as the width you give it: a width that is 5%
+off makes every speed 5% off.
+
+Measured with the synthetic test (a 222 px tin, so about 0.02 cm per pixel):
+
+- The detector's apparent size was within 0.1-0.5% of the true size in the sharp test cases
+  and 1.9% with blur (`find_object_test`).
+- On sharp motion the cm/s error is 0.1%, the same as the px/s error.
+- On blurred frames the cm/s error is within 1 point of the px/s error, so the size estimate
+  adds very little; the error there comes from the tracker (below).
 
 ## Findings
 
@@ -41,18 +71,28 @@ Apple M1 (8 cores, CPU only) with the machine otherwise idle.
 
 ### The pipeline as built (detector every frame, TrackerNano on misses)
 
-| Scenario | Object found: detector alone | With tracker | Position error: detector frames | Position error: tracker frames | Median speed error |
+Ranges are two runs. The object is learned with GrabCut, which is not exactly repeatable, so
+results move a little from run to run.
+
+| Scenario | Object found: detector alone | With tracker | Position error: detector frames | Position error: tracker frames | Median speed error (px/s and cm/s) |
 |---|---|---|---|---|---|
-| Sharp, 250 px/s | 100% | 100% | 0.9 px | n/a | 0.2% |
-| 12 px motion blur | 20% | 53% | 0.8 px | 11 px | 3.7% |
-| 25 px motion blur | 20% | 53% | 0.9 px | 14 px | 6.3% |
-| 50 px motion blur | 19% | 52% | 0.8 px | 22 px | 4.9% |
-| Not moving | 100% | 100% | 0.9 px | n/a | reads 0 px/s in 100% of frames |
+| Sharp, 250 px/s | 100% | 100% | 0.9 px | n/a | 0.1-0.2% |
+| 12 px motion blur | 20% | 53% | 0.8 px | 11-14 px | 5-11% too low |
+| 25 px motion blur | 20% | 53% | 0.9 px | 14 px | 8-13% too low |
+| 50 px motion blur | 19% | 52% | 0.8-0.9 px | 22 px | 16% too low |
+| Not moving | 100% | 100% | 0.9-1.0 px | n/a | reads 0 in 100% of frames |
 | Leaves the scene at 1.6 s | n/a | tracked for 0.97 s after it left, then stopped | n/a | n/a | n/a |
 
 Where the detector works, position and speed are accurate. With any motion blur the
 detector finds the tin only in the frames before it starts moving (the 20%), and the tracker
-carries it for 1 second after that, which is where the 53% comes from.
+carries it for 1 second after that, which is where the 53% comes from. On those tracker
+frames the speed reads low, by more the heavier the blur: trackers damp the movement they
+report.
+
+(An earlier version of this table showed blurred speed errors of 4-8%. The path code then
+kept returning the last speed for 0.3 s after the object was lost, which repeated one
+accurate reading for several frames. The speed now disappears as soon as the object is lost,
+and the errors above are measured only on frames where the tracker is really following.)
 
 ### Cost per frame
 
@@ -69,37 +109,35 @@ conditions (the object's box is 213x212 px):
 | TrackerVit | 3.2 | 0.2x | 0.2 ms |
 
 The SIFT detector costs about 43 ms per frame. The two neural trackers are 3-4x cheaper than
-detecting with ORB, and about 10x cheaper than SIFT. That is what makes "detect
-occasionally, track in between" worthwhile here; the older trackers (MIL, KCF, CSRT) cost
-more than the detector, so for them it was not.
+detecting with ORB, and about 10x cheaper than SIFT. The older trackers (MIL, KCF, CSRT) cost
+more than the detector.
 
 (An earlier run on a heavily loaded machine made every tracker look slower than the
 detector. That was machine load; these numbers are from an idle machine.)
 
 ### Which tracker? End to end
 
-The same video with each tracker swapped in. Tracker frames are the frames where the
-detector missed and the tracker supplied the position. Each cell is mean position error /
-median speed error.
+The same video with each tracker swapped in. Each cell is the mean position error on tracker
+frames / the median speed error (always too low, except MIL at 25 px where it was 1% high).
 
 | Tracker | 12 px blur | 25 px blur | 50 px blur |
 |---|---|---|---|
-| TrackerMIL | 10 px / 6% | 10 px / 7% | 18 px / 13% |
-| TrackerKCF | 15 px / 9% | 17 px / 10% | 19 px / 11% |
-| TrackerCSRT | 23 px / 26% | 6 px / 4% | 22 px / 4% |
-| **TrackerNano** (two runs) | 11-14 px / 4-7% | 14 px / 4-6% | 22 px / 5-8% |
-| TrackerVit | 7 px / 9% | 8 px / 12% | 11 px / 24% |
+| TrackerMIL | 9 px / 6% | 4 px / 2% | 17 px / 13% |
+| TrackerKCF | 16 px / 9% | 17 px / 10% | 19 px / 13% |
+| TrackerCSRT | 21 px / 26% | 8 px / 6% | 22 px / 12% |
+| **TrackerNano** (two runs) | 11-14 px / 5-11% | 14 px / 8-13% | 22 px / 16% |
+| TrackerVit | 7 px / 7% | 8 px / 12% | 11 px / 15% |
 
-"Frames followed" was 49-54% for every tracker, because it is set by the 1-second limit.
-Run-to-run variation is a few pixels and several points of speed error (two MIL runs differed
-by up to 3.4 px and 5.7 points; two Nano runs by up to 2.6 px and 3.7 points), so small
-differences are inside the noise.
+No tracker is clearly more accurate. The differences between them are about the size of the
+run-to-run variation (Nano alone varies by 5 points at 12 px; two MIL runs differed by up to
+9 px and 6 points). CSRT is the one clear outlier, at 26% at 12 px. "Frames followed" is
+49-54% for every tracker, because it is set by the 1-second limit, not by the tracker.
 
 ### Following alone, with no detector to re-anchor it
 
 Each tracker started from a sharp detection and then followed the object for the rest of the
 video (66 frames of movement, about 2.2 s). Counts are frames within 20 px of the true
-position.
+position. This does not use the path code, so the scoring change above does not affect it.
 
 | Tracker | 25 px blur (of 66) | 50 px blur (of 66) | Object in view before it left (of 24) | Still reported a box after the object left | Confidence score |
 |---|---|---|---|---|---|
@@ -121,17 +159,19 @@ SIFT also costs about 3x as much per frame.
 
 ## Why TrackerNano
 
-- **Cheap.** 4.2 ms a frame, about 13x cheaper than MIL and 3x cheaper than detecting.
-- **Accurate enough where it matters.** Its speed error is 4-8% at every blur level. That
-  is better than MIL and KCF at 25 and 50 px of blur and better than ViT at every level.
-  CSRT matches it at 25 and 50 px but had 26% at 12 px, and costs about 6x as much.
+- **Cheap, which keeps the frame rate up.** The detector costs about 13 ms a frame. On a
+  detector miss, Nano adds 4 ms (about 17 ms in total, so the loop keeps up with a 30 fps
+  camera). MIL would add 55 ms (about 68 ms in total, or about 15 fps) in exactly the frames
+  where the object is moving fast.
+- **Equally accurate as far as these runs can tell.** Its speed error is in the same 5-16%
+  range as MIL, KCF and ViT, and better than CSRT at 12 px. It is not more accurate than MIL.
 - **Small.** Two model files, about 1.8 MB together.
 - **No tracker offered a usable lost signal**, so the 1-second limit is needed whichever is
   used. The neural trackers' scores do not separate "object in view" from "object gone", and
   the one tracker that noticed the object leaving (KCF) is the worst at following it.
 
-ViT is cheaper still and has the best position accuracy, but its speed error under heavy
-blur (12-24%) is the worst, and the speed readout is what this tracker's positions feed.
+ViT is cheaper still (3.2 ms) and has the best position accuracy, but its speed error under
+heavy blur is in the same range as the others and it has no other advantage here.
 
 **Trade-off:** Nano needs its model files at runtime. They are not in the repository (the
 repository the OpenCV documentation links to shows no license), so
@@ -143,12 +183,12 @@ repository the OpenCV documentation links to shows no license), so
   and nothing can tell "blurred" from "gone". Tracker scores do not separate them (Nano's
   score was 0.8-0.9 whether the tin was in view or had left), and the detector fails in both
   cases. A longer limit would follow the background after the object leaves.
-- **Speed is noisier on tracker frames.** With Nano, tracker positions are 11-22 px off,
-  where detector positions are within about 1 px.
+- **The speed reads low on tracker frames**, by 5-16% depending on the blur. It is accurate
+  (within 0.2%) when the detector is finding the object.
+- **Speed in cm/s is for sideways motion only**, and is only as accurate as the object width
+  you give it.
 - **These results are synthetic.** The test pastes pixels from the learning photo, so a real
   webcam will be harder. Real blur depends on exposure time, which is long in dim rooms.
-  Results also vary a little from run to run, because the object is learned with GrabCut,
-  which is not exactly repeatable.
 - **The tracking test takes about a minute**, mostly rendering the blurred frames.
 
 ## Ideas not tried
@@ -159,7 +199,9 @@ repository the OpenCV documentation links to shows no license), so
    1-second limit. The cost is training one model per object, where today any photo works.
 2. **Lucas-Kanade optical flow on the matched feature points.** Cheap and gives a count of
    surviving points, but its blur robustness has not been measured here.
-3. **Detecting every N frames.** Now affordable (the tracker is 3x cheaper than the
+3. **Real distances including depth.** Calibrating the camera (a printed checkerboard) would
+   give 3D position and speed, including motion toward the camera, from the object's width.
+4. **Detecting every N frames.** Now affordable (the tracker is 3x cheaper than the
    detector), but it only saves time. It does not help with blur.
 
 ## Reproducing

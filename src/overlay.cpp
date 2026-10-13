@@ -3,76 +3,51 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 namespace motion {
 
 namespace {
 
-constexpr double DOT_SPACING_PX = 12.0;
-constexpr int DOT_RADIUS_PX = 3;
-// The oldest part of the trail is still faintly visible.
-constexpr double MIN_ALPHA = 0.15;
+// The trail's line is this many pixels thick at its thickest, times sqrt(TRAIL_LENGTH / 2).
+constexpr double TRAIL_THICKNESS_FACTOR = 2.5;
 
 constexpr int LABEL_MARGIN_PX = 20;
 constexpr int LABEL_PADDING_PX = 8;
 constexpr double LABEL_FONT_SCALE = 0.8;
 constexpr int LABEL_THICKNESS = 2;
 
-double alphaForAge(double ageSeconds) {
-    return std::clamp(1.0 - ageSeconds / TRAIL_SECONDS, MIN_ALPHA, 1.0);
-}
-
-// Draws a filled circle that blends into the image by `alpha`.
-void blendDot(cv::Mat& image, cv::Point center, int radius, const cv::Scalar& color, double alpha) {
-    cv::Rect region(center.x - radius, center.y - radius, 2 * radius + 1, 2 * radius + 1);
-    region &= cv::Rect(0, 0, image.cols, image.rows);
-    if (region.empty()) return;
-
-    cv::Mat target = image(region);
-    cv::Mat withDot = target.clone();
-    cv::circle(withDot, center - region.tl(), radius, color, cv::FILLED, cv::LINE_AA);
-    cv::addWeighted(withDot, alpha, target, 1.0 - alpha, 0, target);
-}
-
 }  // namespace
 
-std::vector<Dot> dottedPath(const std::vector<TrailPoint>& trail, double spacingPx) {
-    std::vector<Dot> dots;
-    double untilNextDot = 0;  // each segment starts with a dot
+int trailThickness(size_t index) {
+    double thickness = std::sqrt(static_cast<double>(TRAIL_LENGTH) / static_cast<double>(index + 1)) * TRAIL_THICKNESS_FACTOR;
+    return std::max(1, static_cast<int>(thickness));
+}
 
+void drawTrail(cv::Mat& image, const std::vector<std::optional<cv::Point2f>>& trail, const cv::Scalar& color) {
     for (size_t i = 1; i < trail.size(); i++) {
-        const TrailPoint& a = trail[i - 1];
-        const TrailPoint& b = trail[i];
-        if (a.segment != b.segment) {
-            untilNextDot = 0;
-            continue;
-        }
+        // No line to or from a frame where the object was lost.
+        if (!trail[i - 1] || !trail[i]) continue;
 
-        double length = cv::norm(b.position - a.position);
-        double distance = untilNextDot;
-        while (distance <= length) {
-            double fraction = length > 0 ? distance / length : 0;
-            cv::Point2f position = a.position + (b.position - a.position) * static_cast<float>(fraction);
-            double age = a.ageSeconds + (b.ageSeconds - a.ageSeconds) * fraction;
-            dots.push_back({position, alphaForAge(age)});
-            distance += spacingPx;
-        }
-        untilNextDot = distance - length;
-    }
-    return dots;
-}
-
-void drawDottedTrail(cv::Mat& image, const std::vector<TrailPoint>& trail, const cv::Scalar& color) {
-    for (const Dot& dot : dottedPath(trail, DOT_SPACING_PX)) {
-        blendDot(image, cv::Point(cvRound(dot.position.x), cvRound(dot.position.y)), DOT_RADIUS_PX, color,
-                 dot.alpha);
+        cv::Point newer(cvRound(trail[i - 1]->x), cvRound(trail[i - 1]->y));
+        cv::Point older(cvRound(trail[i]->x), cvRound(trail[i]->y));
+        cv::line(image, newer, older, color, trailThickness(i), cv::LINE_AA);
     }
 }
 
-void drawSpeedLabel(cv::Mat& image, std::optional<double> speedPxPerSecond) {
-    std::string text = speedPxPerSecond ? "Speed: " + std::to_string(cvRound(*speedPxPerSecond)) + " px/s"
-                                        : "Speed: --";
+void drawSpeedLabel(cv::Mat& image, std::optional<double> pixelsPerSecond, std::optional<double> cmPerSecond) {
+    std::ostringstream label;
+    label << "Speed: ";
+    if (!pixelsPerSecond) {
+        label << "--";
+    } else if (cmPerSecond) {
+        label << std::fixed << std::setprecision(1) << *cmPerSecond << " cm/s  (" << cvRound(*pixelsPerSecond) << " px/s)";
+    } else {
+        label << cvRound(*pixelsPerSecond) << " px/s";
+    }
+    std::string text = label.str();
 
     int baseline = 0;
     cv::Size textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, LABEL_FONT_SCALE, LABEL_THICKNESS, &baseline);

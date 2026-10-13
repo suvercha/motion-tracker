@@ -22,6 +22,9 @@ enum class DetectorType { ORB, SIFT };
 struct Detection {
     cv::Rect box;        // bounding box of the object's outline
     cv::Point2f center;  // the object's centroid; steadier than the box center when it rotates
+    // The object's widest dimension as it appears in the frame, in pixels. With the
+    // object's real width, this gives the real size of a pixel at the object's distance.
+    double apparentSizePx;
 };
 
 // An object learned from a photo, which can then be found in other images.

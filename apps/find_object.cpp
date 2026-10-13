@@ -1,8 +1,10 @@
 // Learns an object from a photo, then looks for it in the camera feed. Once found,
-// it follows the object, draws its recent path as a dotted line, and shows its speed.
+// it follows the object, draws its recent path as a tapering line, and shows its speed.
 //
-// Usage: find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]
-//   defaults: orb, the project's models/ folder, camera 0, object.jpg
+// Usage: find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N]
+//                    [camera_index] [image_path]
+//   defaults: orb, the project's models/ folder, 4.5 cm, camera 0, object.jpg
+// The speed is shown in cm/s as well as px/s if the object's real width is known.
 // The tracker's model files must be in the models folder: run scripts/download_models.sh.
 // See docs/feature-detector-decision.md for how to choose a detector, and
 // docs/tracking-design.md for how the object is followed.
@@ -36,17 +38,37 @@ constexpr const char* WINDOW_NAME = "Find Object";
 // OpenCV colors are BGR.
 const cv::Scalar DETECTED_BOX_COLOR(0, 255, 0);   // green: found by the detector
 const cv::Scalar TRACKED_BOX_COLOR(0, 255, 255);  // yellow: detector missed, following with the tracker
-const cv::Scalar TRAIL_COLOR(0, 140, 255);        // orange
+const cv::Scalar TRAIL_COLOR(0, 0, 255);          // red
 constexpr std::string_view DETECTOR_OPTION = "--detector=";
 constexpr std::string_view MODELS_OPTION = "--models=";
-constexpr const char* USAGE = "Usage: find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]";
+constexpr std::string_view WIDTH_OPTION = "--object-width-cm=";
+constexpr const char* USAGE =
+    "Usage: find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]";
+// The widest dimension of the tin in the default object.jpg.
+constexpr double DEFAULT_OBJECT_WIDTH_CM = 4.5;
+constexpr double MAX_OBJECT_WIDTH_CM = 1000;
 
 struct Options {
     DetectorType detector = DEFAULT_DETECTOR;
     std::string modelsDir = DEFAULT_MODELS_DIR;
+    double objectWidthCm = DEFAULT_OBJECT_WIDTH_CM;  // 0: unknown, so speed is in pixels only
     int cameraIndex = DEFAULT_CAMERA_INDEX;
     std::string imagePath = DEFAULT_IMAGE_PATH;
 };
+
+// A width in centimetres between 0 (unknown) and MAX_OBJECT_WIDTH_CM. Prints an error and
+// returns nullopt for anything else.
+std::optional<double> parseObjectWidthCm(std::string_view text) {
+    std::string copy(text);
+    char* end = nullptr;
+    double width = std::strtod(copy.c_str(), &end);
+    if (copy.empty() || end != copy.c_str() + copy.size() || !(width >= 0 && width <= MAX_OBJECT_WIDTH_CM)) {
+        std::cerr << "Error: object width must be a number of centimetres from 0 to " << MAX_OBJECT_WIDTH_CM
+                  << ", got '" << text << "'.\n" << USAGE << std::endl;
+        return std::nullopt;
+    }
+    return width;
+}
 
 // Prints an error and returns nullopt if the arguments are invalid.
 std::optional<Options> parseArgs(int argc, char** argv) {
@@ -65,6 +87,10 @@ std::optional<Options> parseArgs(int argc, char** argv) {
             options.detector = *detector;
         } else if (arg.substr(0, MODELS_OPTION.size()) == MODELS_OPTION) {
             options.modelsDir = std::string(arg.substr(MODELS_OPTION.size()));
+        } else if (arg.substr(0, WIDTH_OPTION.size()) == WIDTH_OPTION) {
+            std::optional<double> width = parseObjectWidthCm(arg.substr(WIDTH_OPTION.size()));
+            if (!width) return std::nullopt;
+            options.objectWidthCm = *width;
         } else if (arg.substr(0, 2) == "--") {
             std::cerr << "Error: unknown option '" << arg << "'.\n" << USAGE << std::endl;
             return std::nullopt;
@@ -107,7 +133,7 @@ std::optional<ObjectFinder> learnObject(const std::string& imagePath, DetectorTy
 // Shows the camera feed. Until the object is first found it counts down the
 // search time, and exits if the object never appears. After that it follows the
 // object, drawing its box, its recent path, and its speed, until the user presses 'q'.
-ExitCode searchForObject(Camera& camera, ObjectTracker& tracker) {
+ExitCode searchForObject(Camera& camera, ObjectTracker& tracker, double objectWidthCm) {
     // Started at the first real frame so camera warm-up doesn't count.
     std::optional<Clock::time_point> searchStart;
     PathHistory path;
@@ -129,14 +155,14 @@ ExitCode searchForObject(Camera& camera, ObjectTracker& tracker) {
         if (track) {
             if (!everFound) std::cout << "Object found." << std::endl;
             everFound = true;
-            path.add(now, track->center);
+            path.add(now, track->center, track->cmPerPixel(objectWidthCm));
         } else {
-            path.breakPath();
+            path.markLost(now);
         }
 
         if (everFound) {
-            drawDottedTrail(display, path.trail(now), TRAIL_COLOR);
-            drawSpeedLabel(display, path.speed(now));
+            drawTrail(display, path.trail(), TRAIL_COLOR);
+            drawSpeedLabel(display, path.speed(now), path.metricSpeed(now));
         } else {
             double elapsed = std::chrono::duration<double>(now - *searchStart).count();
             if (elapsed >= SEARCH_TIMEOUT_SECONDS) {
@@ -169,7 +195,11 @@ int main(int argc, char** argv) {
     std::optional<Camera> camera = openCamera(options->cameraIndex);
     if (!camera) return toInt(ExitCode::Error);
 
-    ExitCode result = searchForObject(*camera, *tracker);
+    if (options->objectWidthCm > 0) {
+        std::cout << "Speed in cm/s assumes the object is " << options->objectWidthCm
+                  << " cm across (--object-width-cm=N to change it, 0 for pixels only)." << std::endl;
+    }
+    ExitCode result = searchForObject(*camera, *tracker, options->objectWidthCm);
     cv::destroyAllWindows();
     return toInt(result);
 }

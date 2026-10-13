@@ -102,6 +102,19 @@ cv::Mat isolateObject(const cv::Mat& image, const cv::Rect& seed) {
     return clean;
 }
 
+double maxDiameter(const std::vector<cv::Point2f>& points) {
+    if (points.size() < 2) return 0;
+
+    // The farthest pair of points is always on the convex hull.
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(points, hull);
+    double longest = 0;
+    for (size_t i = 0; i < hull.size(); i++) {
+        for (size_t j = i + 1; j < hull.size(); j++) longest = std::max(longest, cv::norm(hull[i] - hull[j]));
+    }
+    return longest;
+}
+
 cv::Mat cutOutObject(const cv::Mat& image, const cv::Mat& mask) {
     cv::Mat cutout(image.size(), image.type(), cv::Scalar(255, 255, 255));
     image.copyTo(cutout, mask);

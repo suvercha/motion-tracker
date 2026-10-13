@@ -5,7 +5,7 @@ Two small OpenCV programs that work with a webcam:
 - **`capture_object`**: shows a live preview; press Enter to cut out the object in the center
   of the frame and save it as an image.
 - **`find_object`**: learns an object from a photo, finds it in the live feed, and follows it,
-  drawing its recent path and showing its speed.
+  drawing its recent path and showing its speed in cm/s.
 
 ## Capturing an object: `capture_object`
 
@@ -29,8 +29,8 @@ A second program that learns an object from a photo and finds it in the live web
 
 ```bash
 ./scripts/download_models.sh     # once: fetches the tracker's model files into models/
-./build/find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]
-# defaults: orb, the project's models/ folder, camera 0, object.jpg
+./build/find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]
+# defaults: orb, the project's models/ folder, 4.5 cm, camera 0, object.jpg
 ```
 
 1. The object is isolated from the photo (`object.jpg` should show the object against a
@@ -42,11 +42,19 @@ A second program that learns an object from a photo and finds it in the live web
    - the box is **green** when the detector found the object in that frame, and **yellow**
      when the detector missed it (for example, motion blur) and a small neural-network
      tracker (OpenCV's `TrackerNano`, about 4 ms a frame) is following it;
-   - the object's path over the last 3 seconds is drawn as a fading **dotted line**;
-   - its **speed**, in pixels per second, is shown in the top-left corner (`--` when it is not
-     known). Speed is in pixels because a single camera cannot measure real distances.
+   - the object's recent path (its last 64 positions) is drawn as a **red line** that tapers from
+     thick at the object to thin at its tail. `TRAIL_LENGTH` in
+     [include/motion/path_history.hpp](include/motion/path_history.hpp) sets how long the tail is;
+   - its **speed** is shown in the top-left corner, in cm/s and px/s (`--` when it is not known).
 4. If the object is not found within **15 seconds**, the program prints
    `Object not found`, exits, and returns exit code 1.
+
+**Speed in cm/s** uses the object's real width: the apparent width of the object in the frame,
+compared with `--object-width-cm` (4.5 by default, the tin in `object.jpg`), gives the real
+size of a pixel, and the pixel speed is multiplied by it. It is only right for motion
+**across** the view at about a constant distance; motion toward or away from the camera is not
+measured. Pass `--object-width-cm=0` to show pixels per second only, and set the width to match
+your object when you use another photo.
 
 ORB is the default because it is fast. See
 [docs/feature-detector-decision.md](docs/feature-detector-decision.md) for the trade-offs
@@ -83,8 +91,8 @@ ctest --test-dir build --output-on-failure      # runs every test below
   blur scenarios it checks that the tracker carries the object for about a second after the
   detector loses it, with an accurate speed; following a blur that lasts longer is a known
   limit, see [docs/tracking-design.md](docs/tracking-design.md).
-- **`path_history_test`**: unit tests for the trail, the speed calculation and the dotted
-  line, using made-up timestamps.
+- **`path_history_test`**: unit tests for the trail, the speeds in px/s and cm/s, and the
+  trail drawing, using made-up timestamps.
 
 The tests need `object.jpg` in the project root, and expect the photo's top-left corner
 to be plain background.
@@ -132,7 +140,7 @@ Tests are built too; turn them off with `cmake -S . -B build -DBUILD_TESTING=OFF
 
 ```bash
 ./build/capture_object [camera_index]
-./build/find_object [--detector=orb|sift] [--models=DIR] [camera_index] [image_path]
+./build/find_object [--detector=orb|sift] [--models=DIR] [--object-width-cm=N] [camera_index] [image_path]
 ```
 
 ## Project layout

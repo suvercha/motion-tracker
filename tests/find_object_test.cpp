@@ -19,6 +19,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -75,6 +76,7 @@ struct Scene {
     cv::Mat frame;
     cv::Rect truth;
     cv::Point2f truthCenter;  // where the object's centroid is in the frame
+    double truthSizePx;       // the object's widest dimension in the frame
 };
 
 // The homography that rotates and scales the photo to a random spot near the
@@ -122,6 +124,9 @@ Scene makeScene(const cv::Mat& photo, const cv::Mat& mask, const Conditions& c, 
     std::vector<cv::Point2f> placed;
     cv::perspectiveTransform(centroid, placed, H);
     s.truthCenter = placed[0];
+    std::vector<cv::Point2f> outline;
+    for (const cv::Point& p : largestContour(warpedMask).value_or(std::vector<cv::Point>{})) outline.emplace_back(p);
+    s.truthSizePx = maxDiameter(outline);
 
     if (c.blur > 0) cv::GaussianBlur(s.frame, s.frame, cv::Size(0, 0), c.blur);
     if (c.noise > 0) {
@@ -161,13 +166,14 @@ struct CaseResult {
     int hits = 0;
     double meanIou = 0;
     double meanCenterErrorPx = 0;  // distance from the detected center to the true center
+    double meanSizeErrorPercent = 0;  // apparent size against the true size
     double meanMs = 0;
 };
 
 CaseResult runCase(const ObjectFinder& finder, const cv::Mat& photo, const cv::Mat& mask, const Case& c,
                    DetectorType type, const std::string& outDir, cv::RNG& rng) {
     CaseResult result;
-    double iouSum = 0, centerErrorSum = 0, msSum = 0;
+    double iouSum = 0, centerErrorSum = 0, sizeErrorSum = 0, msSum = 0;
     for (int t = 0; t < TRIALS; t++) {
         Scene scene = makeScene(photo, mask, c.conditions, t, rng);
         auto start = std::chrono::steady_clock::now();
@@ -179,6 +185,7 @@ CaseResult runCase(const ObjectFinder& finder, const cv::Mat& photo, const cv::M
             result.hits++;
             iouSum += iou;
             centerErrorSum += cv::norm(found->center - scene.truthCenter);
+            sizeErrorSum += 100.0 * std::abs(found->apparentSizePx - scene.truthSizePx) / scene.truthSizePx;
         }
         if (t == 0) {
             cv::Mat annotated = scene.frame.clone();
@@ -193,6 +200,7 @@ CaseResult runCase(const ObjectFinder& finder, const cv::Mat& photo, const cv::M
     }
     result.meanIou = result.hits ? iouSum / result.hits : 0.0;
     result.meanCenterErrorPx = result.hits ? centerErrorSum / result.hits : 0.0;
+    result.meanSizeErrorPercent = result.hits ? sizeErrorSum / result.hits : 0.0;
     result.meanMs = msSum / TRIALS;
     return result;
 }
@@ -208,7 +216,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask, co
     }
     std::cout << "learned " << finder->featureCount() << " features\n\n";
     std::cout << std::left << std::setw(10) << "case" << std::setw(31) << "description" << std::setw(7) << "hits"
-              << std::setw(9) << "meanIoU" << std::setw(11) << "ctrErrPx" << std::setw(9) << "meanMs" << "result\n";
+              << std::setw(9) << "meanIoU" << std::setw(11) << "ctrErrPx" << std::setw(10) << "sizeErr%" << std::setw(9) << "meanMs" << "result\n";
 
     int failures = 0;
     cv::RNG rng(RNG_SEED);
@@ -220,7 +228,7 @@ int runDetector(DetectorType type, const cv::Mat& photo, const cv::Mat& mask, co
         std::cout << std::left << std::setw(10) << c.id << std::setw(31) << c.description
                   << std::setw(7) << (std::to_string(r.hits) + "/" + std::to_string(TRIALS))
                   << std::fixed << std::setprecision(2) << std::setw(9) << r.meanIou
-                  << std::setprecision(1) << std::setw(11) << r.meanCenterErrorPx
+                  << std::setprecision(1) << std::setw(11) << r.meanCenterErrorPx << std::setw(10) << r.meanSizeErrorPercent
                   << std::setprecision(0) << std::setw(9) << r.meanMs << verdict << '\n';
     }
 

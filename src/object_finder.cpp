@@ -130,7 +130,7 @@ std::optional<Detection> ObjectFinder::find(const cv::Mat& frame) const {
 
     std::vector<cv::Point2f> center;
     cv::perspectiveTransform(std::vector<cv::Point2f>{centroid_}, center, H);
-    return Detection{found, center[0]};
+    return Detection{found, center[0], maxDiameter(projected)};
 }
 
 }  // namespace motion

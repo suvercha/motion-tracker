@@ -3,27 +3,24 @@
 #include "motion/path_history.hpp"
 
 #include <opencv2/core.hpp>
+#include <cstddef>
 #include <optional>
 #include <vector>
 
 namespace motion {
 
-// One dot of a dotted line. `alpha` is 1 for the newest part of the trail and
-// fades toward 0 for the oldest.
-struct Dot {
-    cv::Point2f position;
-    double alpha;
-};
+// How thick the trail's line is at segment `index`, where 1 is the newest segment (between
+// the newest and the second newest point) and TRAIL_LENGTH - 1 is the oldest. The trail
+// tapers: thick at the object, thin at its tail.
+[[nodiscard]] int trailThickness(size_t index);
 
-// Places dots at a fixed distance `spacingPx` along the trail, so they stay
-// evenly spaced however fast the object moves. Segments are not connected to
-// each other.
-[[nodiscard]] std::vector<Dot> dottedPath(const std::vector<TrailPoint>& trail, double spacingPx);
+// Draws the trail (as returned by PathHistory::trail, newest first) as connected line
+// segments that get thinner with age. Frames where the object was lost leave a gap.
+void drawTrail(cv::Mat& image, const std::vector<std::optional<cv::Point2f>>& trail, const cv::Scalar& color);
 
-// Draws the trail as a dotted line that fades with age.
-void drawDottedTrail(cv::Mat& image, const std::vector<TrailPoint>& trail, const cv::Scalar& color);
-
-// Draws the speed in the top-left corner, or "--" if it is not known.
-void drawSpeedLabel(cv::Mat& image, std::optional<double> speedPxPerSecond);
+// Draws the speed in the top-left corner: centimetres per second as well as pixels per
+// second if the real size is known, or "--" if the speed is not known.
+void drawSpeedLabel(cv::Mat& image, std::optional<double> pixelsPerSecond,
+                    std::optional<double> cmPerSecond = std::nullopt);
 
 }  // namespace motion

@@ -23,4 +23,8 @@ constexpr double PHOTO_SEED_FRACTION = 0.84;
 // The masked object on a white background, cropped to its bounding box.
 [[nodiscard]] cv::Mat cutOutObject(const cv::Mat& image, const cv::Mat& mask);
 
+// The longest distance between any two of `points`: the widest dimension of a shape
+// given by its outline. Zero for fewer than two points.
+[[nodiscard]] double maxDiameter(const std::vector<cv::Point2f>& points);
+
 }  // namespace motion

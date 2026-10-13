@@ -55,7 +55,7 @@ std::optional<Track> ObjectTracker::update(const cv::Mat& frame, Clock::time_poi
         lastDetectionFrame_ = frame.clone();
         centerOffset_ = detection->center - boxCenter(detection->box);
         tracker_.release();  // stale; restarted from this detection if the next frame is a miss
-        return Track{detection->box, detection->center, true};
+        return Track{detection->box, detection->center, true, detection->apparentSizePx};
     }
 
     if (!lastDetection_) return std::nullopt;
@@ -86,7 +86,7 @@ std::optional<Track> ObjectTracker::followWithTracker(const cv::Mat& frame) {
         reset();
         return std::nullopt;
     }
-    return Track{box, boxCenter(box) + centerOffset_, false};
+    return Track{box, boxCenter(box) + centerOffset_, false, lastDetection_->apparentSizePx};
 }
 
 }  // namespace motion
